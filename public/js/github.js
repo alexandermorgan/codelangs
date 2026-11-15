@@ -20,7 +20,8 @@ const API = "https://api.github.com";
 // diff never changes, so it is kept for 30 days.
 const LIST_TTL = 12 * 3600 * 1000;
 const DIFF_TTL = 30 * 24 * 3600 * 1000;
-const CACHE_VERSION = 2;
+// Bumped whenever cached data changes meaning (v3: JS/TS merged).
+const CACHE_VERSION = 3;
 const MAX_COMMIT_PAGES = 50; // 5,000 commits per repository
 const MAX_FILE_PAGES = 10; // GitHub lists at most 3,000 files per commit
 
@@ -65,9 +66,61 @@ export function monthRange(start, end) {
 
 // ---------- HTTP ----------
 
-function createClient({ token, fetchImpl, signal }) {
+// GitHub's documented limits for the REST API, besides the hourly quota
+// (5,000 requests with a token, 60 without): at most 100 requests in flight,
+// and at most 900 per minute to one endpoint. Requests are paced just under
+// that, so a long load runs flat out without tripping the per-minute limit.
+const REQUESTS_PER_SECOND = 14;
+const BURST = 30;
+export const CONCURRENCY = 16;
+
+/** A token bucket: `take()` resolves when a request may start. */
+export function createPacer(perSecond, burst) {
+  let tokens = burst;
+  let last = Date.now();
+  let pausedUntil = 0;
+  return {
+    async take(signal) {
+      for (;;) {
+        const now = Date.now();
+        if (now < pausedUntil) {
+          await sleep(pausedUntil - now, signal);
+          continue;
+        }
+        if (perSecond === Infinity) return;
+        tokens = Math.min(burst, tokens + ((now - last) / 1000) * perSecond);
+        last = now;
+        if (tokens >= 1) {
+          tokens -= 1;
+          return;
+        }
+        await sleep(((1 - tokens) / perSecond) * 1000, signal);
+      }
+    },
+    /** Holds every request until `until` (GitHub asked us to slow down). */
+    pause(until) {
+      pausedUntil = Math.max(pausedUntil, until);
+      tokens = 0;
+    },
+  };
+}
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(t);
+      reject(signal.reason);
+    }, { once: true });
+  });
+}
+
+function createClient({ token, fetchImpl, signal, onSlowDown = () => {}, minBackoff = 60000, requestsPerSecond = REQUESTS_PER_SECOND }) {
   const rate = {};
-  async function request(path) {
+  const pacer = createPacer(requestsPerSecond, BURST);
+  async function request(path, attempt = 0) {
+    await pacer.take(signal);
     const headers = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
     if (token) headers.Authorization = `Bearer ${token}`;
     const res = await fetchImpl(API + path, { headers, signal });
@@ -79,9 +132,18 @@ function createClient({ token, fetchImpl, signal }) {
     }
     if (res.status === 401) throw new UserError("GitHub rejected the token. Check it or remove it, then try again.");
     if (res.status === 403 || res.status === 429) {
-      const retryAfter = Number(res.headers.get("retry-after"));
+      // Out of the hourly quota: nothing to do but stop until it resets.
       if (remaining === "0") throw new RateLimitError(reset, resource);
-      if (retryAfter) throw new RateLimitError(Date.now() + retryAfter * 1000, resource);
+      // A secondary ("slow down") limit: GitHub says to wait at least a minute
+      // (or as long as Retry-After says), then carry on. Everyone waits.
+      const retryAfter = Number(res.headers.get("retry-after"));
+      const body = retryAfter ? "" : await res.text().catch(() => "");
+      if ((retryAfter || /secondary rate limit/i.test(body)) && attempt < 4) {
+        const wait = Math.max(minBackoff * 2 ** attempt, retryAfter * 1000 || 0);
+        pacer.pause(Date.now() + wait);
+        onSlowDown(Date.now() + wait);
+        return request(path, attempt + 1);
+      }
       return { status: res.status, data: null };
     }
     if (res.status === 202 || res.status === 204) return { status: res.status, data: null };
@@ -124,6 +186,14 @@ function fingerprint(token) {
 /** A cache backed by localStorage (or nothing, where storage is unavailable). */
 export function browserCache(prefix = "codelangs") {
   const key = (k) => `${prefix}:v${CACHE_VERSION}:${k}`;
+  // Entries from older cache versions are never read again: free their space.
+  try {
+    for (const name of Object.keys(localStorage)) {
+      if (name.startsWith(`${prefix}:v`) && !name.startsWith(key(""))) localStorage.removeItem(name);
+    }
+  } catch {
+    // storage unavailable
+  }
   return {
     /** Drops cached repo and commit lists, keeping diffs (which never change). */
     clearLists() {
@@ -200,75 +270,60 @@ async function discover(client, login, { token, onProgress }) {
     if (!repos.has(k)) repos.set(k, { full, source, ...extra });
     return repos.get(k);
   };
-
-  // Their own repos, then repos they are a member of.
-  onProgress({ phase: "repos", message: "Listing repositories…" });
-  for (const type of ["owner", "member"]) {
-    for (let page = 1; page <= 10; page++) {
-      const res = await request(`/users/${encodeURIComponent(login)}/repos?type=${type}&per_page=100&page=${page}`);
-      const list = res.data ?? [];
-      for (const r of list) {
-        if (r.fork || r.size === 0) continue;
-        addRepo(r.full_name, type === "owner" ? "owned" : "member", { language: r.language });
-      }
-      if (list.length < 100) break;
-    }
-  }
-
-  // With a token: private repos it can read (the lists above only show public
-  // ones). The user's commits are found in them the same way as anywhere else.
-  if (token) {
-    onProgress({ phase: "repos", message: "Listing private repositories the token can read…" });
-    for (let page = 1; page <= 10; page++) {
-      const res = await request(
-        `/user/repos?affiliation=owner,collaborator,organization_member&visibility=private&per_page=100&page=${page}`,
-      );
-      const list = res.data ?? [];
-      for (const r of list) {
-        if (r.fork || r.size === 0) continue;
-        addRepo(r.full_name, "private", { language: r.language });
-      }
-      if (list.length < 100) break;
-    }
-  }
-
-  // Repos where their pull requests were merged.
-  onProgress({ phase: "search", message: "Searching merged pull requests…" });
   const q = (s) => encodeURIComponent(s);
-  for (let page = 1; page <= (token ? 3 : 1); page++) {
-    const res = await request(
-      `/search/issues?q=${q(`type:pr author:${user.login} is:merged -user:${user.login}`)}&per_page=100&page=${page}`,
-    );
-    const items = res.data?.items ?? [];
-    for (const item of items) addRepo(item.repository_url.split("/repos/")[1], "pr");
-    if (items.length < 100) break;
+
+  /** Every page of a repo list (up to 1,000 repos). */
+  async function listPages(path) {
+    const all = [];
+    for (let page = 1; page <= 10; page++) {
+      const res = await request(`${path}&per_page=100&page=${page}`);
+      const list = Array.isArray(res.data) ? res.data : [];
+      all.push(...list);
+      if (list.length < 100) break;
+    }
+    return all.filter((r) => !r.fork && r.size !== 0);
+  }
+  async function searchPages(path, pages) {
+    const all = [];
+    for (let page = 1; page <= pages; page++) {
+      const res = await request(`${path}&per_page=100&page=${page}`);
+      const items = res.data?.items ?? [];
+      all.push(...items);
+      if (items.length < 100) break;
+    }
+    return all;
   }
 
-  // Repos where commit search finds their commits. Commit search also finds
-  // copies of a project re-uploaded by other people (not marked as forks),
-  // which would count the same commits twice, so a repo found only this way
-  // must be older than the user's first commit in it and must not share most
-  // of its commits with a repo already counted.
-  onProgress({ phase: "search", message: "Searching commits…" });
+  // These lookups don't depend on each other, so they run at the same time:
+  // their own repos, repos they're a member of, private repos the token can
+  // read (the public lists never show private ones), repos with their merged
+  // pull requests, and repos where commit search finds their commits.
+  onProgress({ phase: "repos", message: "Finding repositories…" });
+  const [owned, member, privateRepos, prs, commitHits] = await Promise.all([
+    listPages(`/users/${encodeURIComponent(login)}/repos?type=owner`),
+    listPages(`/users/${encodeURIComponent(login)}/repos?type=member`),
+    token ? listPages(`/user/repos?affiliation=owner,collaborator,organization_member&visibility=private`) : [],
+    searchPages(`/search/issues?q=${q(`type:pr author:${user.login} is:merged -user:${user.login}`)}`, token ? 3 : 1),
+    searchPages(`/search/commits?q=${q(`author:${user.login} -user:${user.login}`)}`, token ? 5 : 2),
+  ]);
+  for (const r of owned) addRepo(r.full_name, "owned");
+  for (const r of member) addRepo(r.full_name, "member");
+  for (const r of privateRepos) addRepo(r.full_name, "private");
+  for (const item of prs) addRepo(item.repository_url.split("/repos/")[1], "pr");
+
+  // Commit search also finds copies of a project re-uploaded by other people
+  // (not marked as forks), which would count the same commits twice, so a repo
+  // found only this way must be older than the user's first commit in it and
+  // must not share most of its commits with a repo already counted.
   const found = new Map(); // repo lowercase -> { full, shas:Set, first }
-  const shaRepos = new Map();
-  for (let page = 1; page <= (token ? 5 : 2); page++) {
-    const res = await request(
-      `/search/commits?q=${q(`author:${user.login} -user:${user.login}`)}&per_page=100&page=${page}`,
-    );
-    const items = res.data?.items ?? [];
-    for (const item of items) {
-      const r = item.repository;
-      if (!r || r.fork) continue;
-      const k = r.full_name.toLowerCase();
-      const entry = found.get(k) ?? { full: r.full_name, shas: new Set(), first: Infinity };
-      entry.shas.add(item.sha);
-      entry.first = Math.min(entry.first, Date.parse(item.commit?.author?.date) || Infinity);
-      found.set(k, entry);
-      if (!shaRepos.has(item.sha)) shaRepos.set(item.sha, new Set());
-      shaRepos.get(item.sha).add(k);
-    }
-    if (items.length < 100) break;
+  for (const item of commitHits) {
+    const r = item.repository;
+    if (!r || r.fork) continue;
+    const k = r.full_name.toLowerCase();
+    const entry = found.get(k) ?? { full: r.full_name, shas: new Set(), first: Infinity };
+    entry.shas.add(item.sha);
+    entry.first = Math.min(entry.first, Date.parse(item.commit?.author?.date) || Infinity);
+    found.set(k, entry);
   }
 
   const claimed = new Set();
@@ -280,20 +335,20 @@ async function discover(client, login, { token, onProgress }) {
   if (candidates.length) {
     onProgress({ phase: "search", message: "Checking repositories found by commit search…" });
     const checked = [];
-    await pool(candidates, 4, async ([k, entry]) => {
+    await pool(candidates, CONCURRENCY, async ([k, entry]) => {
       const res = await request(`/repos/${entry.full}`);
       const r = res.data;
       if (!r || r.fork) return;
       const created = Date.parse(r.created_at);
       if (created > entry.first) return; // created after the commit: a copy
-      checked.push({ k, entry, created, language: r.language, full: r.full_name });
+      checked.push({ k, entry, created, full: r.full_name });
     });
     checked.sort((a, b) => a.created - b.created);
     for (const c of checked) {
       const shared = [...c.entry.shas].filter((sha) => claimed.has(sha)).length;
       if (shared > c.entry.shas.size / 2) continue;
       for (const sha of c.entry.shas) claimed.add(sha);
-      addRepo(c.full, "commits", { language: c.language });
+      addRepo(c.full, "commits");
     }
   }
 
@@ -337,8 +392,32 @@ function shuffled(items, key) {
  * rate limit stops it early, `rateLimited` says when to try again, and what was
  * loaded is cached so the next try continues from there.
  */
-export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(globalThis), signal, onProgress = () => {}, cache = memoryCache() } = {}) {
-  const client = createClient({ token, fetchImpl, signal });
+export async function loadProfile(
+  login,
+  {
+    token = "",
+    fetchImpl = fetch.bind(globalThis),
+    signal,
+    onProgress = () => {},
+    onSnapshot = null,
+    snapshotEvery = 5000,
+    minBackoff = 60000,
+    requestsPerSecond = REQUESTS_PER_SECOND,
+    cache = memoryCache(),
+  } = {},
+) {
+  const client = createClient({
+    token,
+    fetchImpl,
+    signal,
+    minBackoff,
+    requestsPerSecond,
+    onSlowDown: (until) =>
+      onProgress({
+        phase: "slow",
+        message: `GitHub asked for a pause; carrying on at ${new Date(until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}`,
+      }),
+  });
   const { request, rate } = client;
   // Results depend on what the token can see, so each token gets its own cache.
   const cacheKey = (s) => `${login.toLowerCase()}:${token ? fingerprint(token) : "public"}:${s}`;
@@ -359,6 +438,7 @@ export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(gl
   }
   const { user, repos } = found;
   let rateLimited = null;
+  let timer = null;
   const denied = [];
 
   // Per repo: the user's commits ([sha, authored date]) and, as they load,
@@ -388,7 +468,7 @@ export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(gl
     const listProgress = () =>
       onProgress({ phase: "list", done: listed, total: repos.length, message: `Finding commits: ${listed} of ${repos.length} repositories` });
     listProgress();
-    await pool(toList, token ? 6 : 3, async (repo) => {
+    await pool(toList, token ? CONCURRENCY : 4, async (repo) => {
       const commits = [];
       for (let page = 1; page <= MAX_COMMIT_PAGES; page++) {
         const res = await request(`/repos/${repo.full}/commits?author=${encodeURIComponent(user.login)}&per_page=100&page=${page}`);
@@ -434,7 +514,9 @@ export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(gl
       onProgress({ phase: "diffs", done, total, message: `Reading commits: ${done.toLocaleString()} of ${total.toLocaleString()}` });
     diffProgress();
     let sinceSave = 0;
-    await pool(shuffled(todo, (t) => t.sha), token ? 6 : 3, async ({ repo, sha, date }) => {
+    if (onSnapshot && done > 0) onSnapshot(snapshot());
+    timer = onSnapshot ? setInterval(() => onSnapshot(snapshot()), snapshotEvery) : null;
+    await pool(shuffled(todo, (t) => t.sha), token ? CONCURRENCY : 4, async ({ repo, sha, date }) => {
       const files = [];
       for (let page = 1; page <= MAX_FILE_PAGES; page++) {
         const res = await request(`/repos/${repo.full}/commits/${sha}?per_page=300&page=${page}`);
@@ -457,11 +539,19 @@ export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(gl
     if (!(err instanceof RateLimitError)) throw err;
     rateLimited = { reset: err.reset, resource: err.resource };
   } finally {
+    clearInterval(timer);
     for (const repo of repos) saveDiffs(repo.full);
   }
+  return snapshot();
 
-  // Per-repo results, each commit counted in the first repo that has it.
+  /**
+   * Everything loaded so far: per-repo month tallies ({ month: { lang:
+   * [added, deleted, commits] } }), each commit counted in the first repo that
+   * has it, plus the languages of each loaded commit.
+   */
+  function snapshot() {
   const counted = new Set();
+  const commitLangs = [];
   let totalCommits = 0;
   let loadedCommits = 0;
   let ignored = 0;
@@ -483,10 +573,13 @@ export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(gl
       loaded++;
       const [month, langs, skipped] = diff;
       ignored += skipped;
+      const names = Object.keys(langs);
+      if (names.length) commitLangs.push(names);
       for (const [lang, [a, d]] of Object.entries(langs)) {
-        const row = ((months[month] ??= {})[lang] ??= [0, 0]);
+        const row = ((months[month] ??= {})[lang] ??= [0, 0, 0]);
         row[0] += a;
         row[1] += d;
+        row[2] += 1;
         adds += a;
         dels += d;
       }
@@ -497,14 +590,29 @@ export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(gl
   }
   const listedRepos = repos.filter((repo) => state.get(repo.full).list).length;
   const privateRepos = repos.filter((repo) => repo.source === "private").length;
-  return { user, repos: out, listedRepos, totalRepos: repos.length, totalCommits, loadedCommits, ignored, rateLimited, rate, denied, privateRepos, usedToken: Boolean(token) };
+  return {
+    user,
+    repos: out,
+    commitLangs,
+    listedRepos,
+    totalRepos: repos.length,
+    totalCommits,
+    loadedCommits,
+    ignored,
+    rateLimited,
+    rate,
+    denied: [...denied],
+    privateRepos,
+    usedToken: Boolean(token),
+  };
+  }
 }
 
 // ---------- aggregation ----------
 
 /**
  * Turns per-repo month tallies into per-language monthly arrays.
- * Returns { months: ["YYYY-MM", ...], languages: [{ name, adds, dels, total }] }
+ * Returns { months: ["YYYY-MM", ...], languages: [{ name, adds, dels, total, commits }] }
  * with languages sorted by total lines changed, largest first.
  */
 export function aggregate(profile, now = Date.now()) {
@@ -522,15 +630,16 @@ export function aggregate(profile, now = Date.now()) {
   for (const repo of profile.repos) {
     for (const [key, langs] of Object.entries(repo.months)) {
       const i = index.get(key);
-      for (const [name, [a, d]] of Object.entries(langs)) {
+      for (const [name, [a, d, c = 0]] of Object.entries(langs)) {
         let lang = byName.get(name);
         if (!lang) {
-          lang = { name, adds: new Float64Array(months.length), dels: new Float64Array(months.length), total: 0 };
+          lang = { name, adds: new Float64Array(months.length), dels: new Float64Array(months.length), total: 0, commits: 0 };
           byName.set(name, lang);
         }
         lang.adds[i] += a;
         lang.dels[i] += d;
         lang.total += a + d;
+        lang.commits += c;
       }
     }
   }

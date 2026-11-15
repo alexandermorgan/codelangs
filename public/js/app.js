@@ -1,5 +1,19 @@
 import { aggregate, browserCache, loadProfile, UserError } from "./github.js";
-import { assignSlots, attachHover, buildView, formatLines, legendEntries, monthLabel, OTHER, renderSvg, seriesColor, standalone } from "./chart.js";
+import {
+  assignSlots,
+  attachHover,
+  attachPieHover,
+  buildView,
+  formatLines,
+  legendEntries,
+  monthLabel,
+  OTHER,
+  pieEntries,
+  renderPie,
+  renderSvg,
+  seriesColor,
+  standalone,
+} from "./chart.js";
 
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = "codelangs:token";
@@ -16,6 +30,14 @@ const state = {
   split: false,
   view: null,
   controller: null,
+  // The months picked on the slider, as keys, or null for everything. Kept as
+  // keys so the pick holds while the data (and its month list) grows.
+  range: null,
+  // The language picked in a legend, shown in color while the rest are gray.
+  focus: null,
+  loading: false,
+  // A snapshot that arrived while the pointer was on a chart, shown when it leaves.
+  deferred: null,
 };
 
 // ---------- token ----------
@@ -76,9 +98,9 @@ function writeUrl(push = false) {
   if (state.login) p.set("u", state.login);
   if (state.mode !== "percent") p.set("scale", state.mode);
   if (state.split) p.set("view", "split");
-  if (state.data && (state.from !== 0 || state.to !== state.data.months.length - 1)) {
-    p.set("from", state.data.months[state.from]);
-    p.set("to", state.data.months[state.to]);
+  if (state.range) {
+    p.set("from", state.range.from);
+    p.set("to", state.range.to);
   }
   const url = `${location.pathname}${p.size ? `?${p}` : ""}`;
   if (url === location.pathname + location.search) return;
@@ -107,6 +129,10 @@ async function load(login, initial = {}) {
   state.controller = controller;
   state.login = login;
   state.data = null;
+  state.profile = null;
+  state.deferred = null;
+  state.loading = true;
+  if (initial.from && initial.to) state.range = { from: initial.from, to: initial.to };
   document.body.classList.add("has-results");
   $("results").hidden = false;
   $("chart-area").hidden = true;
@@ -118,6 +144,7 @@ async function load(login, initial = {}) {
   document.title = `@${login} · Code Langs`;
   setStatus(`Looking up @${login}…`, "loading");
 
+  const current = () => state.controller === controller && !controller.signal.aborted;
   let profile;
   try {
     profile = await loadProfile(login, {
@@ -125,11 +152,19 @@ async function load(login, initial = {}) {
       signal: controller.signal,
       cache,
       onProgress: (p) => {
-        if (state.controller === controller) setStatus(p.message, "loading");
+        if (!current()) return;
+        state.progress = p.message;
+        setStatus(state.data ? `${p.message} · the charts update every 5 seconds` : p.message, "loading");
+      },
+      // While commits are still loading, the charts show what has arrived so
+      // far, updated every 5 seconds.
+      onSnapshot: (snap) => {
+        if (current()) show(snap);
       },
     });
   } catch (err) {
     if (controller.signal.aborted) return;
+    state.loading = false;
     if (err instanceof UserError) setStatus(err.message, "error");
     else {
       console.error(err);
@@ -137,8 +172,29 @@ async function load(login, initial = {}) {
     }
     return;
   }
-  if (controller.signal.aborted) return;
+  if (!current()) return;
+  state.loading = false;
+  state.deferred = null;
+  show(profile);
+  showNotes(profile);
+  if (!state.data.languages.length && !profile.rateLimited) {
+    setStatus(
+      `No lines of code found in @${profile.user.login}'s accepted commits` +
+        (readToken() ? ". " : " in public repositories. ") +
+        "Commits only count on a repository's default branch, when GitHub links them to the account.",
+      "error",
+    );
+  }
+}
 
+/** Shows a profile: the final one, or a snapshot taken while loading. */
+function show(profile) {
+  // Don't swap the charts out from under the pointer: wait until it leaves.
+  if (state.loading && pointerOnChart()) {
+    state.deferred = profile;
+    return;
+  }
+  state.deferred = null;
   state.profile = profile;
   state.login = profile.user.login;
   showProfile(profile.user);
@@ -151,34 +207,38 @@ async function load(login, initial = {}) {
   const totalDels = profile.repos.reduce((s, r) => s + r.dels, 0);
   const commits = profile.loadedCommits;
   $("profile-meta").textContent =
-    `${commits.toLocaleString()} ${commits === 1 ? "commit" : "commits"} in ${profile.repos.length} ${profile.repos.length === 1 ? "repository" : "repositories"} · ` +
+    `${commits.toLocaleString()}${state.loading ? ` of ${profile.totalCommits.toLocaleString()}` : ""} ${commits === 1 ? "commit" : "commits"} in ${profile.repos.length} ${profile.repos.length === 1 ? "repository" : "repositories"} · ` +
     `+${formatLines(totalAdds)} −${formatLines(totalDels)} lines of code · ` +
     `on GitHub since ${monthLabel(profile.user.createdAt.slice(0, 7))}`;
+  renderRepoTable(profile);
+  if (!data.languages.length) return;
 
-  showNotes(profile);
-  if (!data.languages.length) {
-    if (!profile.rateLimited) {
-      setStatus(
-        `No lines of code found in @${profile.user.login}'s accepted commits` +
-          (readToken() ? ". " : " in public repositories. ") +
-          "Commits only count on a repository's default branch, when GitHub links them to the account.",
-        "error",
-      );
-    }
-    return;
-  }
-
-  // Range from the URL, if it fits; otherwise everything.
+  // The picked range, by month, if it's still inside the data; otherwise everything.
   const n = data.months.length;
-  const fromIdx = data.months.indexOf(initial.from);
-  const toIdx = data.months.indexOf(initial.to);
-  state.from = fromIdx >= 0 ? fromIdx : 0;
-  state.to = toIdx >= state.from ? toIdx : n - 1;
+  const f = state.range ? data.months.indexOf(state.range.from) : -1;
+  const t = state.range ? data.months.indexOf(state.range.to) : -1;
+  if (f >= 0 && t >= f) {
+    state.from = f;
+    state.to = t;
+  } else {
+    state.range = null;
+    state.from = 0;
+    state.to = n - 1;
+  }
   setupRange();
   $("chart-area").hidden = false;
   draw();
+  drawPie();
   writeUrl();
-  renderRepoTable(profile);
+}
+
+function pointerOnChart() {
+  return $("figure").matches(":hover") || $("pie-figure").matches(":hover");
+}
+for (const id of ["figure", "pie-figure"]) {
+  $(id).addEventListener("pointerleave", () => {
+    if (state.deferred && !pointerOnChart()) show(state.deferred);
+  });
 }
 
 function showNotes(profile) {
@@ -258,8 +318,9 @@ function draw() {
   const size = chartSize();
   // On narrow screens the legend goes below the chart, leaving the plot the full width.
   const outside = size.width < 640;
-  const svg = renderSvg(view, { ...size, legend: !outside });
-  renderLegend(outside ? view : null);
+  const focus = focusIn(view);
+  const svg = renderSvg(view, { ...size, legend: !outside, focus });
+  renderLegend(outside ? view : null, focus);
   svg.setAttribute("aria-labelledby", "chart-caption");
   $("chart-caption").textContent = `${chartTitle(view)}. ${describe(view)}`;
   chart.replaceChildren(svg);
@@ -267,22 +328,85 @@ function draw() {
   renderSummary(view);
 }
 
-function renderLegend(view) {
+function renderLegend(view, focus) {
   const list = $("legend");
   list.hidden = !view;
   if (!view) return list.replaceChildren();
   list.replaceChildren(
-    ...legendEntries(view).map((entry) => {
+    ...legendEntries(view, focus).map((entry) => {
       const li = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "legend-toggle";
+      button.dataset.name = entry.name;
+      button.setAttribute("aria-pressed", String(entry.picked));
+      button.classList.toggle("dimmed", entry.dimmed);
       const sw = document.createElement("span");
       sw.className = "swatch";
       sw.style.background = entry.color;
-      li.append(sw, entry.name);
-      if (entry.name === OTHER) li.title = entry.members.join(", ");
+      button.append(sw, entry.name);
+      if (entry.name === OTHER) button.title = entry.members.join(", ");
+      li.append(button);
       return li;
     }),
   );
 }
+
+/** The picked language, if the view has it (otherwise nothing is grayed out). */
+function focusIn(view) {
+  return state.focus && view.entities.some((e) => e.name === state.focus) ? state.focus : null;
+}
+
+// ---------- the all-time pie ----------
+
+function pieTitle() {
+  const months = state.data.months;
+  return `@${state.login} · Languages by lines changed, ${monthLabel(months[0])} – ${monthLabel(months.at(-1))}`;
+}
+
+function currentPie() {
+  return pieEntries(state.data, state.slots, state.profile?.commitLangs ?? []);
+}
+
+function drawPie() {
+  if (!state.data) return;
+  const entries = currentPie();
+  const focus = state.focus && entries.some((e) => e.name === state.focus) ? state.focus : null;
+  const svg = renderPie(entries, {
+    fontFamily: getComputedStyle(document.body).fontFamily,
+    fontSize: chartSize().fontSize,
+    focus,
+    hasOther: state.slots.hasOther,
+    maxWidth: Math.max(260, $("pie").clientWidth || 600),
+  });
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${pieTitle()}. ${entries.map((e) => `${e.name} ${Math.round(e.share)}%`).join(", ")}.`);
+  $("pie").replaceChildren(svg);
+  attachPieHover(svg, entries, $("pie-tooltip"), $("pie-figure"));
+}
+
+// Clicking a language in either legend shows only that language, in both
+// charts; clicking it again shows them all.
+function toggleFocus(name) {
+  state.focus = state.focus === name ? null : name;
+  $("tooltip").hidden = true;
+  draw();
+  drawPie();
+  const again = document.querySelector(`.legend-toggle[data-name="${CSS.escape(name)}"]`);
+  again?.focus({ preventScroll: true });
+}
+document.addEventListener("click", (evt) => {
+  const toggle = evt.target instanceof Element ? evt.target.closest(".legend-toggle") : null;
+  if (toggle?.dataset.name) toggleFocus(toggle.dataset.name);
+});
+document.addEventListener("keydown", (evt) => {
+  // SVG legend entries aren't buttons, so Enter and Space are handled here.
+  const toggle = evt.target instanceof Element ? evt.target.closest("svg .legend-toggle") : null;
+  if (toggle?.dataset.name && (evt.key === "Enter" || evt.key === " ")) {
+    evt.preventDefault();
+    toggleFocus(toggle.dataset.name);
+  }
+});
 
 function describe(view) {
   const ranked = [...view.entities].sort((a, b) => b.total - a.total).slice(0, 3);
@@ -302,6 +426,7 @@ new ResizeObserver(() => {
   if (w && w !== redraw.width) {
     redraw.width = w;
     redraw();
+    drawPie();
   }
 }).observe($("chart"));
 
@@ -364,6 +489,7 @@ fromInput.addEventListener("input", () => {
     fromInput.value = String(v);
   }
   state.from = v;
+  rememberRange();
   updateRange();
   redraw();
 });
@@ -374,11 +500,17 @@ toInput.addEventListener("input", () => {
     toInput.value = String(v);
   }
   state.to = v;
+  rememberRange();
   updateRange();
   redraw();
 });
 for (const input of [fromInput, toInput]) input.addEventListener("change", () => writeUrl());
+function rememberRange() {
+  const months = state.data.months;
+  state.range = state.from === 0 && state.to === months.length - 1 ? null : { from: months[state.from], to: months[state.to] };
+}
 $("range-reset").addEventListener("click", () => {
+  state.range = null;
   state.from = 0;
   state.to = state.data.months.length - 1;
   fromInput.value = "0";
@@ -441,11 +573,26 @@ function cell(text) {
 
 // ---------- export ----------
 
-function exportSvg() {
-  const view = currentView();
+/** A standalone SVG of the main chart ("chart") or the all-time pie ("pie"), as shown now. */
+function exportSvg(which) {
   const size = chartSize();
-  const width = Math.max(720, size.width);
-  const svg = renderSvg(view, { ...size, width, height: Math.round(Math.max(size.height, width * 0.48)), fontSize: 15, title: chartTitle(view) });
+  let svg;
+  if (which === "pie") {
+    const entries = currentPie();
+    const focus = state.focus && entries.some((e) => e.name === state.focus) ? state.focus : null;
+    svg = renderPie(entries, { fontFamily: size.fontFamily, fontSize: 15, focus, hasOther: state.slots.hasOther, title: pieTitle() });
+  } else {
+    const view = currentView();
+    const width = Math.max(720, size.width);
+    svg = renderSvg(view, {
+      ...size,
+      width,
+      height: Math.round(Math.max(size.height, width * 0.48)),
+      fontSize: 15,
+      title: chartTitle(view),
+      focus: focusIn(view),
+    });
+  }
   // Resolve colors in the chart's own context (so the file matches the current
   // theme), inside a hidden holder so the chart itself keeps no extra styles.
   const holder = Object.assign(document.createElement("div"), { className: "export-holder" });
@@ -456,8 +603,12 @@ function exportSvg() {
   return text;
 }
 
-function fileName(ext) {
-  const parts = [state.login, "languages", state.mode, state.split ? "split" : null, state.data.months[state.from], state.data.months[state.to]];
+function fileName(ext, which = "chart") {
+  const months = state.data.months;
+  const parts =
+    which === "pie"
+      ? [state.login, "languages-all-time", months[0], months.at(-1)]
+      : [state.login, "languages", state.mode, state.split ? "split" : null, months[state.from], months[state.to]];
   return `${parts.filter(Boolean).join("-")}.${ext}`;
 }
 
@@ -481,16 +632,20 @@ function flash(button, text) {
   }, 1600);
 }
 
-$("copy-svg").addEventListener("click", async (evt) => {
-  const button = evt.currentTarget;
-  try {
-    await navigator.clipboard.writeText(exportSvg());
-    flash(button, "Copied");
-  } catch {
-    flash(button, "Copy failed");
-  }
-});
-$("download-svg").addEventListener("click", () => download(exportSvg(), fileName("svg"), "image/svg+xml"));
+for (const button of document.querySelectorAll("[data-copy]")) {
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(exportSvg(button.dataset.copy));
+      flash(button, "Copied");
+    } catch {
+      flash(button, "Copy failed");
+    }
+  });
+}
+for (const button of document.querySelectorAll("[data-download]")) {
+  const which = button.dataset.download;
+  button.addEventListener("click", () => download(exportSvg(which), fileName("svg", which), "image/svg+xml"));
+}
 $("download-csv").addEventListener("click", () => {
   const rows = [["month", "language", "lines_added", "lines_deleted"]];
   for (let i = state.from; i <= state.to; i++) {
@@ -510,8 +665,8 @@ $("search").addEventListener("submit", (evt) => {
   evt.preventDefault();
   const login = $("username").value.trim().replace(/^@/, "");
   if (!login) return;
-  state.from = 0;
-  state.to = 0;
+  state.range = null;
+  state.focus = null;
   state.login = login;
   state.data = null;
   writeUrl(true);
@@ -524,6 +679,8 @@ document.addEventListener("click", (evt) => {
   evt.preventDefault();
   state.login = a.dataset.user;
   state.data = null;
+  state.range = null;
+  state.focus = null;
   writeUrl(true);
   load(a.dataset.user);
 });
@@ -548,10 +705,12 @@ function fromUrl() {
     const t = state.data.months.indexOf(u.to);
     state.from = f >= 0 ? f : 0;
     state.to = t >= state.from ? t : state.data.months.length - 1;
+    rememberRange();
     setupRange();
     draw();
     return;
   }
+  state.range = null;
   load(u.login, u);
 }
 

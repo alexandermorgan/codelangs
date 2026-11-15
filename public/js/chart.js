@@ -12,9 +12,11 @@
 //   by rank), so a language keeps its color whatever range is shown.
 
 import { register, render } from "../vendor/pele/core.js";
+import pie from "../vendor/pele/diagrams/pie.js";
 import xychart from "../vendor/pele/diagrams/xychart.js";
 
 register(xychart);
+register(pie);
 
 export const OTHER = "Other";
 const MAX_SLOTS = 8;
@@ -95,6 +97,22 @@ export function seriesColor(view, e) {
   return view.hasOther && e.slot === MAX_SLOTS - 1 ? "var(--c-other)" : `var(--c-${e.slot + 1})`;
 }
 
+/** Its color as drawn: gray when another language is picked in the legend. */
+function paint(view, e, focus) {
+  return focus && focus !== e.name ? "var(--c-dim)" : seriesColor(view, e);
+}
+
+/** Makes a legend entry a toggle for picking that language. */
+function makeToggle(item, name, focus) {
+  item.dataset.name = name;
+  item.classList.add("legend-toggle");
+  item.setAttribute("tabindex", "0");
+  item.setAttribute("role", "button");
+  item.setAttribute("aria-pressed", String(focus === name));
+  item.setAttribute("aria-label", focus === name ? `${name}: show all languages` : `Show only ${name}`);
+  if (focus && focus !== name) item.setAttribute("opacity", "0.55");
+}
+
 const num = (v) => (Math.abs(v) < 0.005 ? "0" : v.toFixed(2).replace(/\.?0+$/, ""));
 const quote = (s) => `"${String(s).replace(/"/g, "'")}"`;
 
@@ -120,15 +138,16 @@ function source(view, title) {
   const kinds = view.split ? ["adds", "dels"] : ["total"];
 
   if (view.mode === "percent") {
-    // Stacked: each bar holds the running total from the bottom of its stack.
-    // Declared top of the stack first, so the legend reads in stack order.
+    // Stacked: each bar holds the running total from zero, the biggest
+    // language nearest zero. Declared in the same order as every other view,
+    // so the legend never changes order between views.
     for (const kind of kinds) {
       const running = new Float64Array(n);
       const stack = view.entities.map((e) => {
         const values = Array.from({ length: n }, (_, i) => (running[i] += value(view, e, i, kind)));
         return { entity: e, kind, values };
       });
-      for (const s of stack.reverse()) {
+      for (const s of stack) {
         const labelled = kind !== "dels";
         lines.push(`  bar ${labelled ? quote(s.entity.name) + " " : ""}[${s.values.map(num).join(", ")}]`);
         series.push({ ...s, labelled });
@@ -158,7 +177,7 @@ function el(name, attrs = {}, text) {
 }
 
 /** Renders a view to an <svg> element. */
-export function renderSvg(view, { width, height, fontFamily, fontSize = 16, title, legend = true } = {}) {
+export function renderSvg(view, { width, height, fontFamily, fontSize = 16, title, legend = true, focus = null } = {}) {
   const { text, series } = source(view, title);
   const { svg: markup } = render(text, {
     fontFamily,
@@ -176,11 +195,11 @@ export function renderSvg(view, { width, height, fontFamily, fontSize = 16, titl
   const tpl = document.createElement("template");
   tpl.innerHTML = markup;
   const svg = tpl.content.firstElementChild;
-  adjust(svg, view, series, fontSize);
+  adjust(svg, view, series, fontSize, focus);
   return svg;
 }
 
-function adjust(svg, view, series, fontSize) {
+function adjust(svg, view, series, fontSize, focus) {
   const n = view.months.length;
   const axis = svg.querySelector(".pele-axis")?.getAttribute("d") ?? "";
   const m = axis.match(/M([\d.]+),([\d.]+)V([\d.]+)M[\d.]+,[\d.]+H([\d.]+)/);
@@ -201,7 +220,7 @@ function adjust(svg, view, series, fontSize) {
       g.remove();
       return;
     }
-    const c = seriesColor(view, s.entity);
+    const c = paint(view, s.entity, focus);
     g.setAttribute("fill", c);
     g.removeAttribute("data-id");
     g.dataset.name = s.entity.name;
@@ -213,9 +232,11 @@ function adjust(svg, view, series, fontSize) {
     }
     if (g.classList.contains("pele-bars")) drawOrder.push({ g, s });
   });
+  // The picked language's lines are drawn over the gray ones.
+  if (focus) for (const g of groups) if (g.isConnected && g.dataset.name === focus && g.classList.contains("pele-line")) g.parentNode.append(g);
 
   if (drawOrder.length) {
-    // pele declared each stack top-first; walk it bottom-up.
+    // Each stack is declared from zero outwards.
     const byKind = new Map();
     for (const item of drawOrder) {
       if (!byKind.has(item.s.kind)) byKind.set(item.s.kind, []);
@@ -224,7 +245,7 @@ function adjust(svg, view, series, fontSize) {
     for (const [kind, items] of byKind) {
       const up = kind !== "dels";
       const prev = new Float64Array(n).fill(NaN);
-      for (const { g } of items.reverse()) {
+      for (const { g } of items) {
         // pele drew one bar per month from zero to the running total; keep
         // only the part above the language below, as one stepped shape
         // spanning whole months, so there are no seams between months.
@@ -266,14 +287,15 @@ function adjust(svg, view, series, fontSize) {
     }
   }
 
-  // Legend swatches follow the series colors.
+  // Legend swatches follow the series colors, and each entry picks its language.
   const labelled = series.filter((s) => s.labelled);
   [...svg.querySelectorAll(".pele-legend-item")].forEach((item, i) => {
     const s = labelled[i];
     if (!s) return;
     item.removeAttribute("data-id");
     const swatch = item.querySelector("rect, path");
-    swatch.setAttribute(swatch.tagName.toLowerCase() === "path" ? "stroke" : "fill", seriesColor(view, s.entity));
+    swatch.setAttribute(swatch.tagName.toLowerCase() === "path" ? "stroke" : "fill", paint(view, s.entity, focus));
+    makeToggle(item, s.entity.name, focus);
   });
 
   // Y-axis labels: compact numbers, percent signs, and no minus signs below
@@ -359,14 +381,14 @@ function drawMonthAxis(svg, view, { left, bottom, band, fontSize }) {
 }
 
 /** Legend entries for a view, in the order the chart's own legend uses. */
-export function legendEntries(view) {
-  const entries = view.entities.map((e) => ({
+export function legendEntries(view, focus = null) {
+  return view.entities.map((e) => ({
     name: e.name,
     members: e.members,
-    color: seriesColor(view, e),
+    color: paint(view, e, focus),
+    dimmed: Boolean(focus && focus !== e.name),
+    picked: focus === e.name,
   }));
-  // Stacked charts list the top of the stack first, like the stack itself.
-  return view.mode === "percent" ? entries.reverse() : entries;
 }
 
 /** What the tooltip shows for month i. */
@@ -458,19 +480,19 @@ function tooltipContent(view, i) {
   return frag;
 }
 
-let paint = null;
+let colorCanvas = null;
 /**
  * Rewrites modern CSS colors (oklch(), color-mix()) as rgb()/rgba(), which
  * every SVG editor understands, by painting each one on a 1px canvas.
  */
 function plainColors(value) {
   return value.replace(/(?:oklch|oklab|lab|lch|color-mix|color)\((?:[^()]|\([^()]*\))*\)/g, (css) => {
-    paint ??= Object.assign(document.createElement("canvas"), { width: 1, height: 1 }).getContext("2d", { willReadFrequently: true });
-    paint.clearRect(0, 0, 1, 1);
-    paint.fillStyle = "#000";
-    paint.fillStyle = css;
-    paint.fillRect(0, 0, 1, 1);
-    const [r, g, b, a] = paint.getImageData(0, 0, 1, 1).data;
+    colorCanvas ??= Object.assign(document.createElement("canvas"), { width: 1, height: 1 }).getContext("2d", { willReadFrequently: true });
+    colorCanvas.clearRect(0, 0, 1, 1);
+    colorCanvas.fillStyle = "#000";
+    colorCanvas.fillStyle = css;
+    colorCanvas.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = colorCanvas.getImageData(0, 0, 1, 1).data;
     return a === 255 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`;
   });
 }
@@ -484,6 +506,9 @@ export function standalone(svg, themeSource) {
   const copy = svg.cloneNode(true);
   copy.querySelector(".hover-band")?.remove();
   copy.querySelector(".hover-target")?.remove();
+  for (const node of copy.querySelectorAll(".legend-toggle, .pele-slice")) {
+    for (const a of ["tabindex", "role", "aria-pressed", "aria-label", "data-name"]) node.removeAttribute(a);
+  }
   const computed = getComputedStyle(themeSource);
   const local = new Map();
   for (const decl of (copy.getAttribute("style") ?? "").split(";")) {
@@ -516,4 +541,143 @@ export function standalone(svg, themeSource) {
   copy.setAttribute("height", h);
   copy.insertBefore(el("rect", { width: "100%", height: "100%", fill: plainColors(lookup("--pele-bg") ?? "#fff") }), copy.firstChild);
   return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(copy)}\n`;
+}
+
+// ---------- pie: the whole history ----------
+
+/**
+ * One entry per color slot over the whole history, biggest first, with the
+ * numbers the pie's hover shows. `commitLangs` lists each loaded commit's
+ * languages, so "Other" counts each commit once even when it touches several
+ * of the languages folded into it.
+ */
+export function pieEntries(data, slots, commitLangs = []) {
+  const bySlot = new Map();
+  for (const lang of data.languages) {
+    const slot = slots.slotOf.get(lang.name);
+    let e = bySlot.get(slot);
+    if (!e) {
+      const name = slots.hasOther && slot === MAX_SLOTS - 1 ? OTHER : lang.name;
+      e = { name, slot, members: [], adds: 0, dels: 0, first: null, last: null };
+      bySlot.set(slot, e);
+    }
+    e.members.push(lang.name);
+    for (let i = 0; i < data.months.length; i++) {
+      const a = lang.adds[i];
+      const d = lang.dels[i];
+      e.adds += a;
+      e.dels += d;
+      if (a + d > 0) {
+        if (e.first === null || i < e.first) e.first = i;
+        if (e.last === null || i > e.last) e.last = i;
+      }
+    }
+  }
+  const entries = [...bySlot.values()].map((e) => {
+    const members = new Set(e.members);
+    return {
+      ...e,
+      total: e.adds + e.dels,
+      commits: commitLangs.filter((names) => names.some((n) => members.has(n))).length,
+      first: e.first === null ? null : data.months[e.first],
+      last: e.last === null ? null : data.months[e.last],
+    };
+  });
+  const sum = entries.reduce((s, e) => s + e.total, 0) || 1;
+  for (const e of entries) e.share = (e.total / sum) * 100;
+  return entries.filter((e) => e.total > 0).sort((a, b) => a.slot - b.slot);
+}
+
+/** Renders the all-time pie. Slices carry only their language; hover shows the rest. */
+export function renderPie(entries, { fontFamily, fontSize = 15, title, focus = null, hasOther = false, maxWidth } = {}) {
+  const lines = ["pie"];
+  if (title) lines.push(`  title ${quote(title)}`);
+  for (const e of entries) lines.push(`  ${quote(e.name)} : ${Math.max(1, Math.round(e.total))}`);
+  const { svg: markup } = render(lines.join("\n"), { fontFamily, fontSize, maxWidth });
+  const tpl = document.createElement("template");
+  tpl.innerHTML = markup;
+  const svg = tpl.content.firstElementChild;
+  const byName = new Map(entries.map((e) => [e.name, e]));
+  const view = { hasOther };
+  // Just the languages: no percentages on the slices.
+  for (const g of svg.querySelectorAll(".pele-slice-labels")) g.remove();
+  for (const slice of svg.querySelectorAll(".pele-slice")) {
+    const e = byName.get(slice.getAttribute("data-id"));
+    if (!e) continue;
+    slice.setAttribute("fill", paint(view, e, focus));
+    slice.dataset.name = e.name;
+  }
+  for (const item of svg.querySelectorAll(".pele-legend-item")) {
+    const e = byName.get(item.getAttribute("data-id"));
+    if (!e) continue;
+    item.querySelector("rect")?.setAttribute("fill", paint(view, e, focus));
+    makeToggle(item, e.name, focus);
+    item.removeAttribute("data-id");
+  }
+  for (const slice of svg.querySelectorAll(".pele-slice")) slice.removeAttribute("data-id");
+  return svg;
+}
+
+/** Hover (and tap) on a pie slice shows that language's numbers. */
+export function attachPieHover(svg, entries, tooltip, figure) {
+  const byName = new Map(entries.map((e) => [e.name, e]));
+  let shown = null;
+  const show = (evt) => {
+    const slice = evt.target.closest?.(".pele-slice");
+    const e = slice && byName.get(slice.dataset.name);
+    if (!e) return hide();
+    if (shown !== e.name) {
+      shown = e.name;
+      tooltip.replaceChildren(pieTooltip(e));
+    }
+    tooltip.hidden = false;
+    place(tooltip, figure, evt);
+  };
+  const hide = () => {
+    shown = null;
+    tooltip.hidden = true;
+  };
+  svg.addEventListener("pointermove", show);
+  svg.addEventListener("pointerdown", show);
+  svg.addEventListener("pointerleave", hide);
+}
+
+function place(tooltip, figure, evt) {
+  const box = figure.getBoundingClientRect();
+  const tip = tooltip.getBoundingClientRect();
+  let x = evt.clientX - box.left + 14;
+  if (x + tip.width > box.width) x = evt.clientX - box.left - tip.width - 14;
+  let y = evt.clientY - box.top - tip.height / 2;
+  y = Math.max(0, Math.min(box.height - tip.height, y));
+  tooltip.style.translate = `${Math.max(0, x)}px ${y}px`;
+}
+
+function pieTooltip(e) {
+  const frag = document.createDocumentFragment();
+  const head = document.createElement("div");
+  head.className = "tip-head";
+  const strong = document.createElement("strong");
+  strong.textContent = e.name;
+  const sub = document.createElement("span");
+  sub.textContent = `${e.share < 1 ? "<1" : e.share.toFixed(1)}% of all lines changed`;
+  head.append(strong, sub);
+  const rows = [
+    ["Lines changed", formatLines(e.total)],
+    ["Added", `+${formatLines(e.adds)}`],
+    ["Deleted", `−${formatLines(e.dels)}`],
+    ["Commits", e.commits.toLocaleString()],
+    ["Active", e.first === e.last ? monthLabel(e.first) : `${monthLabel(e.first)} – ${monthLabel(e.last)}`],
+  ];
+  if (e.name === OTHER) rows.push(["Includes", e.members.join(", ")]);
+  const dl = document.createElement("dl");
+  dl.className = "tip-stats";
+  for (const [k, v] of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = k;
+    const dd = document.createElement("dd");
+    dd.textContent = v;
+    dl.append(dt, dd);
+  }
+  frag.append(head, dl);
+  return frag;
 }

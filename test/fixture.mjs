@@ -112,10 +112,11 @@ repos["acme/infra"].commits.push(repos["octo-dev/webapp"].commits[0]);
 export const FIXTURE = { repos };
 
 /**
+ * `slowDownAt`: answer that request with GitHub's secondary-limit 403 (Retry-After: 1).
  * `tokenAccess`: "full" (default), "no-contents" (the token lists private repos
  * but can't read their commits), or "public-only" (it sees no private repos).
  */
-export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "full" } = {}) {
+export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "full", slowDownAt = 0 } = {}) {
   let calls = 0;
   const json = (body, status = 200, extra = {}) => ({
     status,
@@ -139,6 +140,10 @@ export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "ful
     const page = Number(url.searchParams.get("page") || 1);
     const authed = Boolean(headers.Authorization || headers.authorization);
     calls++;
+    // GitHub's secondary ("slow down") limit, once, on request number `slowDownAt`.
+    if (calls === slowDownAt) {
+      return json({ message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again." }, 403, { "retry-after": "1" });
+    }
     if (calls > rateLimitAfter && !path.startsWith("/search/")) {
       return json({ message: "API rate limit exceeded" }, 403, { "x-ratelimit-remaining": "0" });
     }

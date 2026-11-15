@@ -1,4 +1,4 @@
-// Copies the parts of pele the site uses (the core and the xychart diagram,
+// Copies the parts of pele the site uses (the core and the xychart and pie diagrams,
 // plus every chunk they import) from node_modules into public/vendor/pele,
 // so the site stays plain static files with no bundler.
 //
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const src = join(root, "node_modules/pele/dist/esm");
 const out = join(root, "public/vendor/pele");
-const entries = ["core.js", "diagrams/xychart.js"];
+const entries = ["core.js", "diagrams/xychart.js", "diagrams/pie.js"];
 
 if (!existsSync(src)) {
   console.error("node_modules/pele is missing: run bun install first.");

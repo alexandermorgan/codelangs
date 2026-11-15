@@ -45,6 +45,8 @@
   --c-6: #008300;
   --c-7: #6250d6;
   --c-other: #898781;
+  /* Languages grayed out while another is picked in the legend. */
+  --c-dim: #dcdad3;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -76,6 +78,7 @@
     --c-6: #0ca30c;
     --c-7: #9085e9;
     --c-other: #898781;
+    --c-dim: #3a3a37;
   }
 }
 
@@ -108,6 +111,7 @@
   --c-6: #0ca30c;
   --c-7: #9085e9;
   --c-other: #898781;
+  --c-dim: #3a3a37;
 }
 
 /* ---------- base ---------- */
@@ -889,4 +893,80 @@ td .swatch {
 #repo-table th:last-child,
 #repo-table td:last-child {
   text-align: left;
+}
+
+/* Legend entries pick a language (click again for all of them). */
+.legend-toggle {
+  cursor: pointer;
+}
+svg .legend-toggle:focus {
+  outline: none;
+}
+svg .legend-toggle:focus-visible text {
+  text-decoration: underline;
+}
+.legend button.legend-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.25rem;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  color: inherit;
+}
+.legend button.legend-toggle.dimmed {
+  opacity: 0.55;
+}
+.legend button.legend-toggle[aria-pressed="true"] {
+  font-weight: 600;
+}
+
+/* The all-time pie. */
+.pie-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+.pie-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.pie-head h3 {
+  font-size: 1.05rem;
+}
+.pie-head p {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+}
+.pie-card {
+  padding: 1rem;
+}
+.pie svg {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  height: auto;
+}
+.pie .pele-slice {
+  cursor: default;
+}
+.tip-stats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 0.75rem;
+  margin: 0;
+}
+.tip-stats dt {
+  color: var(--muted-foreground);
+}
+.tip-stats dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }

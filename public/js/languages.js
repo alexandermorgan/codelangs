@@ -8,13 +8,13 @@ const EXTENSIONS = {
   // Python
   py: "Python", pyi: "Python", pyw: "Python", pyx: "Cython", pxd: "Cython",
   ipynb: "Jupyter Notebook",
-  // JavaScript & TypeScript
-  js: "JavaScript", mjs: "JavaScript", cjs: "JavaScript", jsx: "JavaScript",
-  ts: "TypeScript", mts: "TypeScript", cts: "TypeScript", tsx: "TypeScript",
+  // JavaScript, TypeScript and JS framework components, counted together.
+  js: "JS/TS", mjs: "JS/TS", cjs: "JS/TS", jsx: "JS/TS",
+  ts: "JS/TS", mts: "JS/TS", cts: "JS/TS", tsx: "JS/TS",
+  vue: "JS/TS", svelte: "JS/TS", astro: "JS/TS", marko: "JS/TS", riot: "JS/TS",
   // Web
   html: "HTML", htm: "HTML", xhtml: "HTML",
   css: "CSS", scss: "SCSS", sass: "Sass", less: "Less", styl: "Stylus",
-  vue: "Vue", svelte: "Svelte", astro: "Astro",
   // JVM
   java: "Java", kt: "Kotlin", kts: "Kotlin", scala: "Scala", sc: "Scala", groovy: "Groovy", gradle: "Groovy", clj: "Clojure", cljs: "Clojure", cljc: "Clojure", edn: "Clojure",
   // C family

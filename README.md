@@ -45,8 +45,15 @@ bunx serve public
 - **Time span.** A two-thumb slider, in whole months, from the account's
   creation (or its first commit, if earlier) to the current month. The thumbs
   can meet but not cross.
-- **Copy SVG / Download SVG.** These save the chart as a standalone SVG, with
-  a title, in the current theme.
+- **Legend.** Clicking a language shows only that language in color, with
+  the rest grayed out, in both charts. Clicking it again shows all of them. The
+  legend lists languages in the same order in every view.
+- **All-time pie.** Below the main chart, a pie of the whole history, whatever
+  the range and views above. It shows just the languages. Hovering a slice
+  shows its lines changed, added and deleted, share, commits, and the months
+  it was active.
+- **Copy SVG / Download SVG.** Each chart can be saved as a standalone SVG,
+  with a title, in the current theme.
 - **Theme.** Follows the system setting until the switch is used, then
   remembers the choice. The switch is the same one as on alexandermorgan.dev.
 
@@ -72,7 +79,8 @@ All requests go from the visitor's browser to the GitHub REST API:
 3. **Lines per language:** `/repos/:r/commits/:sha` lists each changed file
    with its additions and deletions, following pagination for big commits.
    Each file goes to a language by its extension or filename
-   (`public/js/languages.js`: `.py` is Python, `.tsx` is TypeScript,
+   (`public/js/languages.js`: `.py` is Python, `.ts`, `.js`, `.svelte`
+   and `.vue` are all JS/TS,
    `Makefile` is Makefile, and so on). These files are not counted:
    - data and config formats (JSON, YAML, TOML, XML)
    - prose (Markdown, text)
@@ -90,11 +98,20 @@ and any others are grouped as "Other". The palettes are in
 `public/css/styles.css` and were checked for lightness, contrast and
 color-vision separation against both chart backgrounds.
 
-### Rate limits and caching
+### Speed, rate limits and caching
 
 This costs one request per commit, so a token is close to essential:
-GitHub allows 60 requests an hour without one and 5,000 with one. Commit
-diffs are fetched in a stable shuffled order. If a limit stops a load, the
+GitHub allows 60 requests an hour without one and 5,000 with one. GitHub
+also caps a token at 900 requests a minute to one endpoint, with at most 100
+in flight. The page runs up to 16 requests at once, paced at 14 a second, just
+under that cap. If GitHub still asks it to slow down, every request waits as
+long as GitHub says (at least a minute) and the load carries on. Measured on a
+real repo, 222 commits load in about 16 seconds. The hourly quota means that,
+with a token, at most about 5,000 commits load per hour.
+
+The charts appear as soon as the first commits arrive and update every 5
+seconds while the rest load. Commit diffs are fetched in a stable shuffled
+order. If a limit stops a load, the
 chart is an even sample of the history rather than only its newest part,
 and the page says how many commits were read. Everything is cached in
 `localStorage`: commit lists for 12 hours, and diffs for 30 days (they never

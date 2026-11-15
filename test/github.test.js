@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { aggregate, loadProfile, memoryCache, monthRange, tallyFiles } from "../public/js/github.js";
+import { aggregate, createPacer, loadProfile, memoryCache, monthRange, tallyFiles } from "../public/js/github.js";
 import { languageOf } from "../public/js/languages.js";
 import { createFakeGitHub, FIXTURE } from "./fixture.mjs";
 
@@ -11,9 +11,12 @@ test("monthRange spans years", () => {
 test("files map to languages by extension or name", () => {
   const cases = {
     "src/app.py": "Python",
-    "web/main.ts": "TypeScript",
-    "web/View.tsx": "TypeScript",
-    "lib/index.js": "JavaScript",
+    "web/main.ts": "JS/TS",
+    "web/View.tsx": "JS/TS",
+    "lib/index.js": "JS/TS",
+    "src/routes/+page.svelte": "JS/TS",
+    "components/Card.vue": "JS/TS",
+    "src/pages/index.astro": "JS/TS",
     "src/core.cpp": "C++",
     "include/core.hpp": "C++",
     "src/lib.c": "C",
@@ -59,7 +62,7 @@ test("tallyFiles adds up lines per language and reports what it skipped", () => 
     { filename: "c.js", additions: 3, deletions: 0 },
     { filename: "package-lock.json", additions: 900, deletions: 800 },
   ]);
-  assert.deepEqual(langs, { Python: [15, 3], JavaScript: [3, 0] });
+  assert.deepEqual(langs, { Python: [15, 3], "JS/TS": [3, 0] });
   assert.equal(ignored, 1700);
 });
 
@@ -87,7 +90,7 @@ function expected({ withPrivate }) {
 
 test("loadProfile reads every accepted commit's diff, once", async () => {
   const gh = createFakeGitHub();
-  const profile = await loadProfile("octo-dev", { fetchImpl: gh.fetchImpl, cache: memoryCache() });
+  const profile = await loadProfile("octo-dev", { requestsPerSecond: Infinity, fetchImpl: gh.fetchImpl, cache: memoryCache() });
   const want = expected({ withPrivate: false });
   assert.equal(profile.rateLimited, null);
   assert.deepEqual(profile.repos.map((r) => r.full).sort(), want.repos);
@@ -108,7 +111,7 @@ test("loadProfile reads every accepted commit's diff, once", async () => {
 
 test("with a token, private repos the token can read are included", async () => {
   const gh = createFakeGitHub();
-  const profile = await loadProfile("octo-dev", { token: "github_pat_test", fetchImpl: gh.fetchImpl, cache: memoryCache() });
+  const profile = await loadProfile("octo-dev", { requestsPerSecond: Infinity, token: "github_pat_test", fetchImpl: gh.fetchImpl, cache: memoryCache() });
   const want = expected({ withPrivate: true });
   assert.deepEqual(profile.repos.map((r) => r.full).sort(), want.repos);
   assert.equal(profile.repos.find((r) => r.full === "octo-dev/secret").source, "private");
@@ -119,18 +122,18 @@ test("with a token, private repos the token can read are included", async () => 
 test("a token that can't read commits is reported, and not cached as empty", async () => {
   const cache = memoryCache();
   const token = "github_pat_test";
-  const first = await loadProfile("octo-dev", { token, fetchImpl: createFakeGitHub({ tokenAccess: "no-contents" }).fetchImpl, cache });
+  const first = await loadProfile("octo-dev", { requestsPerSecond: Infinity, token, fetchImpl: createFakeGitHub({ tokenAccess: "no-contents" }).fetchImpl, cache });
   assert.deepEqual(first.denied, ["octo-dev/secret"]);
   assert.equal(first.privateRepos, 1);
   assert.equal(first.repos.find((r) => r.full === "octo-dev/secret"), undefined);
   // The same token after its permissions are fixed on GitHub.
-  const second = await loadProfile("octo-dev", { token, fetchImpl: createFakeGitHub().fetchImpl, cache });
+  const second = await loadProfile("octo-dev", { requestsPerSecond: Infinity, token, fetchImpl: createFakeGitHub().fetchImpl, cache });
   assert.deepEqual(second.denied, []);
   assert.ok(second.repos.find((r) => r.full === "octo-dev/secret"));
 });
 
 test("a token that sees no private repos says so", async () => {
-  const profile = await loadProfile("octo-dev", { token: "github_pat_test", fetchImpl: createFakeGitHub({ tokenAccess: "public-only" }).fetchImpl, cache: memoryCache() });
+  const profile = await loadProfile("octo-dev", { requestsPerSecond: Infinity, token: "github_pat_test", fetchImpl: createFakeGitHub({ tokenAccess: "public-only" }).fetchImpl, cache: memoryCache() });
   assert.equal(profile.usedToken, true);
   assert.equal(profile.privateRepos, 0);
 });
@@ -138,10 +141,10 @@ test("a token that sees no private repos says so", async () => {
 test("clearing cached lists keeps diffs, so a token change re-discovers repos cheaply", async () => {
   const cache = memoryCache();
   const token = "github_pat_test";
-  await loadProfile("octo-dev", { token, fetchImpl: createFakeGitHub({ tokenAccess: "public-only" }).fetchImpl, cache });
+  await loadProfile("octo-dev", { requestsPerSecond: Infinity, token, fetchImpl: createFakeGitHub({ tokenAccess: "public-only" }).fetchImpl, cache });
   cache.clearLists();
   const gh = createFakeGitHub();
-  const after = await loadProfile("octo-dev", { token, fetchImpl: gh.fetchImpl, cache });
+  const after = await loadProfile("octo-dev", { requestsPerSecond: Infinity, token, fetchImpl: gh.fetchImpl, cache });
   assert.equal(after.privateRepos, 1);
   assert.ok(after.repos.find((r) => r.full === "octo-dev/secret"));
   // Diffs read before were reused: only the private repo's commits (plus lists) were fetched.
@@ -151,7 +154,7 @@ test("clearing cached lists keeps diffs, so a token change re-discovers repos ch
 
 test("a rate limit returns an even sample, and the cache resumes from there", async () => {
   const cache = memoryCache();
-  const first = await loadProfile("octo-dev", { fetchImpl: createFakeGitHub({ rateLimitAfter: 200 }).fetchImpl, cache });
+  const first = await loadProfile("octo-dev", { requestsPerSecond: Infinity, fetchImpl: createFakeGitHub({ rateLimitAfter: 200 }).fetchImpl, cache });
   assert.ok(first.rateLimited);
   assert.ok(first.loadedCommits > 0 && first.loadedCommits < first.totalCommits);
   // Shuffled order: the partial sample spans the whole history, not just one end.
@@ -159,14 +162,64 @@ test("a rate limit returns an even sample, and the cache resumes from there", as
   assert.ok(years.size >= 8, `sample covers ${years.size} years`);
 
   const gh = createFakeGitHub();
-  const second = await loadProfile("octo-dev", { fetchImpl: gh.fetchImpl, cache });
+  const second = await loadProfile("octo-dev", { requestsPerSecond: Infinity, fetchImpl: gh.fetchImpl, cache });
   assert.equal(second.rateLimited, null);
   assert.equal(second.loadedCommits, second.totalCommits);
   // Only the commits not read the first time were fetched.
   assert.ok(gh.calls() < second.totalCommits - first.loadedCommits + 60, `${gh.calls()} calls`);
 });
 
+test("requests are paced: a burst, then a steady rate", async () => {
+  const pacer = createPacer(40, 10);
+  const t0 = Date.now();
+  for (let i = 0; i < 30; i++) await pacer.take();
+  const secs = (Date.now() - t0) / 1000;
+  // 10 straight away, then 20 more at 40 a second: about half a second.
+  assert.ok(secs > 0.4 && secs < 0.9, `${secs}s`);
+});
+
+test("a 'slow down' answer pauses everything, then the load carries on", async () => {
+  const phases = [];
+  const gh = createFakeGitHub({ slowDownAt: 40 });
+  const t0 = Date.now();
+  const profile = await loadProfile("octo-dev", {
+    requestsPerSecond: Infinity,
+    minBackoff: 10,
+    fetchImpl: gh.fetchImpl,
+    cache: memoryCache(),
+    onProgress: (p) => phases.push(p.phase),
+  });
+  assert.ok(phases.includes("slow"));
+  assert.ok(Date.now() - t0 >= 1000, "waited for Retry-After");
+  assert.equal(profile.rateLimited, null);
+  assert.equal(profile.loadedCommits, profile.totalCommits);
+});
+
+test("snapshots arrive while loading, growing, and the last matches the result", async () => {
+  const snaps = [];
+  const profile = await loadProfile("octo-dev", {
+    requestsPerSecond: 2000,
+    snapshotEvery: 100,
+    fetchImpl: createFakeGitHub().fetchImpl,
+    cache: memoryCache(),
+    onSnapshot: (p) => snaps.push(p.loadedCommits),
+  });
+  assert.ok(snaps.length >= 3, `${snaps.length} snapshots`);
+  for (let i = 1; i < snaps.length; i++) assert.ok(snaps[i] >= snaps[i - 1]);
+  assert.ok(snaps[0] < profile.loadedCommits);
+});
+
+test("each language knows how many commits touched it", async () => {
+  const profile = await loadProfile("octo-dev", { requestsPerSecond: Infinity, fetchImpl: createFakeGitHub().fetchImpl, cache: memoryCache() });
+  const data = aggregate(profile);
+  for (const lang of data.languages) {
+    const touching = profile.commitLangs.filter((names) => names.includes(lang.name)).length;
+    assert.equal(lang.commits, touching, lang.name);
+  }
+  assert.equal(profile.commitLangs.length <= profile.loadedCommits, true);
+});
+
 test("unknown users get a clear error", async () => {
   const gh = createFakeGitHub();
-  await assert.rejects(loadProfile("nobody-here", { fetchImpl: gh.fetchImpl }), /no GitHub user/);
+  await assert.rejects(loadProfile("nobody-here", { requestsPerSecond: Infinity, fetchImpl: gh.fetchImpl }), /no GitHub user/);
 });
