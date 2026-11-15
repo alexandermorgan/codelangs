@@ -6,8 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "vendor": "node scripts/vendor-pele.mjs",
-    "test": "node --test test/*.test.mjs",
+    "vendor": "bun scripts/vendor-pele.mjs",
+    "test": "bun test",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {

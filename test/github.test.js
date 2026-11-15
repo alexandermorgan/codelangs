@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "bun:test";
 import { aggregate, loadProfile, memoryCache, monthRange, tallyFiles } from "../public/js/github.js";
 import { languageOf } from "../public/js/languages.js";
 import { createFakeGitHub, FIXTURE } from "./fixture.mjs";

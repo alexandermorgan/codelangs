@@ -16,14 +16,23 @@ git clone https://github.com/alexandermorgan/codelangs.git
 ```
 
 ```bash
-cd codelangs && npm install
+cd codelangs && bun install
 ```
 
 ```bash
-npm run dev
+bun run dev
 ```
 
 Then open http://localhost:8787 (or http://localhost:8787/?u=some-username).
+
+The install only fetches the dev tools: Wrangler (the local server and
+deploy tool) and pele (for refreshing the vendored copy). The site itself
+needs nothing installed. Any static file server pointed at `public/` works,
+for example:
+
+```bash
+bunx serve public
+```
 
 ## What you can change on the page
 
@@ -122,13 +131,13 @@ pele's modules are vendored in `public/vendor/pele` (only the core and the
 xychart diagram). After upgrading the `pele` dev dependency, run:
 
 ```bash
-npm run vendor
+bun run vendor
 ```
 
 ## Tests
 
 ```bash
-npm test
+bun test
 ```
 
 The tests run the data pipeline against a fake GitHub API (`test/fixture.mjs`).
@@ -140,5 +149,5 @@ add a `routes` entry for the domain (as in the personal website's config) and
 run:
 
 ```bash
-npm run deploy
+bun run deploy
 ```

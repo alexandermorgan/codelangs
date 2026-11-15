@@ -2,7 +2,7 @@
 // plus every chunk they import) from node_modules into public/vendor/pele,
 // so the site stays plain static files with no bundler.
 //
-//   npm run vendor
+//   bun run vendor
 //
 // Run it again after upgrading pele.
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -15,7 +15,7 @@ const out = join(root, "public/vendor/pele");
 const entries = ["core.js", "diagrams/xychart.js"];
 
 if (!existsSync(src)) {
-  console.error("node_modules/pele is missing: run npm install first.");
+  console.error("node_modules/pele is missing: run bun install first.");
   process.exit(1);
 }
 
