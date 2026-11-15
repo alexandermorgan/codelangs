@@ -1,0 +1,17 @@
+{
+  "name": "commit-languages",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chart the programming languages in a GitHub user's accepted commits over time.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "vendor": "node scripts/vendor-pele.mjs",
+    "test": "node --test test/*.test.mjs",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "pele": "1.13.0",
+    "wrangler": "4.162.0"
+  }
+}

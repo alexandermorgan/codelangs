@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What do you code in?</title>
+<meta name="description" content="Enter a GitHub username to chart the programming languages of their accepted commits over time, in lines of code changed.">
+<meta name="author" content="Alexander Morgan">
+<meta property="og:title" content="What do you code in?">
+<meta property="og:description" content="Chart the programming languages of a GitHub user's accepted commits over time.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/styles.css">
+<script src="/js/theme.js"></script>
+<script type="module" src="/js/app.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="wordmark" href="/">commit languages</a>
+  <nav aria-label="Site">
+    <a href="#about">About</a>
+    <label class="theme-toggle">
+      <span class="sr-only">Dark mode</span>
+      <input class="switch" type="checkbox" role="switch">
+    </label>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="hero-title">
+      <h1>What do you <span>code</span> in?</h1>
+      <p class="subtitle">Enter a GitHub username to chart the languages of their accepted commits over time.</p>
+    </div>
+    <form class="search" id="search" action="/" method="get" autocomplete="off">
+      <label class="sr-only" for="username">GitHub username</label>
+      <input id="username" type="search" name="u" placeholder="github username" required
+        pattern="[A-Za-z0-9\-]{1,39}" title="A GitHub username: letters, numbers and hyphens"
+        autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore>
+      <button type="submit">Go</button>
+    </form>
+    <p class="hint">Try <a href="/?u=alexandermorgan" data-user="alexandermorgan">@alexandermorgan</a></p>
+  </section>
+
+  <section class="results" id="results" hidden aria-labelledby="profile-name">
+    <div class="profile">
+      <img class="avatar" id="avatar" alt="" width="48" height="48">
+      <div>
+        <h2 id="profile-name"><a id="profile-link" href="#"></a></h2>
+        <p class="profile-meta" id="profile-meta"></p>
+      </div>
+    </div>
+
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+
+    <div class="chart-area" id="chart-area" hidden>
+      <div class="controls">
+        <fieldset class="segmented">
+          <legend class="sr-only">Scale</legend>
+          <label><input type="radio" name="mode" value="percent" checked><span>Percent</span></label>
+          <label><input type="radio" name="mode" value="lines"><span>Lines</span></label>
+        </fieldset>
+        <fieldset class="segmented">
+          <legend class="sr-only">Additions and deletions</legend>
+          <label><input type="radio" name="split" value="combined" checked><span>Combined</span></label>
+          <label><input type="radio" name="split" value="split"><span>Added / deleted</span></label>
+        </fieldset>
+        <div class="actions">
+          <button type="button" class="ghost" id="copy-svg" title="Copy the chart as SVG markup">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>
+            <span>Copy SVG</span>
+          </button>
+          <button type="button" class="ghost" id="download-svg" title="Download the chart as an SVG file">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+            <span>Download SVG</span>
+          </button>
+        </div>
+      </div>
+
+      <figure class="chart-card" id="figure">
+        <div class="chart" id="chart"></div>
+        <ul class="legend" id="legend" hidden></ul>
+        <div class="tooltip" id="tooltip" hidden></div>
+        <figcaption class="sr-only" id="chart-caption"></figcaption>
+      </figure>
+
+      <div class="range" id="range">
+        <div class="range-head">
+          <span class="range-label" id="range-label"></span>
+          <button type="button" class="link" id="range-reset" hidden>Show everything</button>
+        </div>
+        <div class="range-slider" id="range-slider">
+          <div class="range-track"><div class="range-fill"></div></div>
+          <input type="range" id="range-from" min="0" max="0" value="0" step="1" aria-label="First month">
+          <input type="range" id="range-to" min="0" max="0" value="0" step="1" aria-label="Last month">
+        </div>
+        <div class="range-ends"><span id="range-min"></span><span id="range-max"></span></div>
+      </div>
+
+      <details class="more">
+        <summary>Languages in this range</summary>
+        <div class="table-wrap">
+          <table id="summary-table">
+            <thead><tr><th scope="col">Language</th><th scope="col">Added</th><th scope="col">Deleted</th><th scope="col">Share</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p><button type="button" class="link" id="download-csv">Download monthly data as CSV</button></p>
+      </details>
+      <details class="more">
+        <summary>Repositories counted</summary>
+        <div class="table-wrap">
+          <table id="repo-table">
+            <thead><tr><th scope="col">Repository</th><th scope="col">Commits</th><th scope="col">Added</th><th scope="col">Deleted</th><th scope="col">Found via</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="muted" id="ignored-note"></p>
+      </details>
+    </div>
+  </section>
+
+  <section class="token-section" id="token-section">
+    <details class="more" id="token-details">
+      <summary>GitHub token <span class="muted">(optional, raises the rate limit)</span></summary>
+      <p>Reading someone's history takes one GitHub API request per commit. Without a token, GitHub allows only 60 requests an hour from your network, so a token is close to essential. Progress is saved in your browser, and if a limit stops a load, the chart shows an even sample of the commits read so far and the next try carries on where it stopped.</p>
+      <p>A token raises the limit to 5,000 requests an hour, and lets the chart include private repositories the token can read. Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>:</p>
+      <ul>
+        <li><strong>Public repositories only:</strong> choose “Public repositories” and add no permissions.</li>
+        <li><strong>Including private repositories:</strong> choose “All repositories” (or pick some) and give it read-only access to <em>Contents</em>, which lets it read commits and their diffs. <em>Metadata</em> (read-only) is added automatically. A fine-grained token covers one account or organization, so organizations' private repositories need a token whose resource owner is that organization.</li>
+      </ul>
+      <p>The token is kept in this browser's local storage and sent only to api.github.com. Results, including those from private repositories, are cached in this browser only.</p>
+      <form class="token-form" id="token-form" autocomplete="off">
+        <label class="sr-only" for="token">GitHub token</label>
+        <input id="token" type="password" placeholder="github_pat_…" spellcheck="false" data-lpignore="true">
+        <button type="submit">Save</button>
+        <button type="button" class="ghost" id="token-forget">Forget</button>
+      </form>
+      <p class="muted" id="token-state"></p>
+    </details>
+  </section>
+
+  <section class="about" id="about" aria-labelledby="about-title">
+    <h2 id="about-title">About</h2>
+    <h3>How it works</h3>
+    <p>Everything runs in your browser against GitHub's API. The tool finds the repositories someone commits to: their own (not forks), ones they are a member of, private ones your token can read, ones where their pull requests were merged, and ones where GitHub's commit search finds their commits. In each, it lists their commits on the default branch, so only accepted commits count. Merge commits are skipped, and a commit that appears in several repositories counts once.</p>
+    <p>For each commit it reads the list of changed files and gives each file's added and deleted lines to the language of its extension: <code>.py</code> is Python, <code>.ts</code> is TypeScript, <code>Makefile</code> is Makefile, and so on. Files that aren't code aren't counted: data and config formats (JSON, YAML, TOML, XML), prose (Markdown, text), lockfiles, binaries, and generated or vendored code such as minified bundles or anything under <code>node_modules/</code>, <code>vendor/</code> or <code>dist/</code>. Commits are dated by when they were written. If someone has used more than eight languages, the seven with the most lines changed get their own colors and the rest are combined as “Other”. Each language keeps its color whatever time span is shown.</p>
+    <p>Without a token only public repositories count, and only commits GitHub can link to the account through their email address. Up to 5,000 commits per repository are read.</p>
+    <h3>Who made this</h3>
+    <p>I'm Alexander Morgan, a generalist developer and cost-optimization contractor. You can find my consulting work at <a href="https://costopconsulting.com">costopconsulting.com</a>, and my projects, writing and publications at <a href="https://alexandermorgan.dev">alexandermorgan.dev</a>.</p>
+    <p>This tool is inspired by Rhys Sullivan's <a href="https://areyougoingexponential.rhys.dev/">Are you going exponential?</a> and <a href="https://github.com/RhysSullivan/shiptalkers">shiptalkers</a>. Charts are drawn with <a href="https://pele.run">pele</a>.</p>
+  </section>
+</main>
+
+<footer class="footer">
+  <span>Built by <a href="https://alexandermorgan.dev">Alexander Morgan</a></span>
+  <span><a href="https://costopconsulting.com">costopconsulting.com</a></span>
+</footer>
+</body>
+</html>
