@@ -144,17 +144,19 @@ async function load(login, initial = {}) {
 
   const totalAdds = profile.repos.reduce((s, r) => s + r.adds, 0);
   const totalDels = profile.repos.reduce((s, r) => s + r.dels, 0);
+  const commits = profile.loadedCommits;
   $("profile-meta").textContent =
-    `${profile.repos.length} ${profile.repos.length === 1 ? "repository" : "repositories"} · ` +
-    `+${formatLines(totalAdds)} −${formatLines(totalDels)} lines · ` +
+    `${commits.toLocaleString()} ${commits === 1 ? "commit" : "commits"} in ${profile.repos.length} ${profile.repos.length === 1 ? "repository" : "repositories"} · ` +
+    `+${formatLines(totalAdds)} −${formatLines(totalDels)} lines of code · ` +
     `on GitHub since ${monthLabel(profile.user.createdAt.slice(0, 7))}`;
 
   showNotes(profile);
   if (!data.languages.length) {
     if (!profile.rateLimited) {
       setStatus(
-        `No accepted commits found for @${profile.user.login} in public repositories. ` +
-          "Commits only count when GitHub links them to the account, and on a repository's default branch.",
+        `No lines of code found in @${profile.user.login}'s accepted commits` +
+          (readToken() ? ". " : " in public repositories. ") +
+          "Commits only count on a repository's default branch, when GitHub links them to the account.",
         "error",
       );
     }
@@ -178,7 +180,11 @@ function showNotes(profile) {
   const notes = [];
   if (profile.rateLimited) {
     const time = new Date(profile.rateLimited.reset).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    const loaded = `Loaded ${profile.scanned} of ${profile.total} repositories before GitHub's rate limit was reached.`;
+    const loaded =
+      profile.listedRepos < profile.totalRepos
+        ? `Searched ${profile.listedRepos} of ${profile.totalRepos} repositories before GitHub's rate limit was reached` +
+          (profile.loadedCommits ? `, and read ${profile.loadedCommits.toLocaleString()} commits.` : ".")
+        : `Read ${profile.loadedCommits.toLocaleString()} of ${profile.totalCommits.toLocaleString()} commits before GitHub's rate limit was reached; the chart shows an even sample of them.`;
     const next = readToken()
       ? ` Try again after ${time} to load the rest.`
       : ` Try again after ${time} to load the rest (progress is saved), or `;
@@ -193,11 +199,6 @@ function showNotes(profile) {
       setStatus([notes.join(" "), a, " to raise the limit."], "error");
       return;
     }
-  }
-  if (profile.computing.length) {
-    notes.push(
-      `GitHub is still computing statistics for ${profile.computing.length} ${profile.computing.length === 1 ? "repository" : "repositories"}; reload in a minute to include ${profile.computing.length === 1 ? "it" : "them"}.`,
-    );
   }
   setStatus(notes.join(" "), notes.length ? "error" : "");
 }
@@ -397,6 +398,9 @@ function renderRepoTable(profile) {
   const label = { owned: "Own repository", member: "Member", private: "Private (via token)", pr: "Merged pull requests", commits: "Commit search" };
   const tbody = $("repo-table").querySelector("tbody");
   const repos = [...profile.repos].sort((a, b) => b.adds + b.dels - (a.adds + a.dels));
+  $("ignored-note").textContent = profile.ignored
+    ? `Another ${formatLines(profile.ignored)} changed lines were in files that aren't counted: data and config formats, prose, lockfiles, and generated or vendored code.`
+    : "";
   tbody.replaceChildren(
     ...repos.map((r) => {
       const tr = document.createElement("tr");
@@ -405,8 +409,8 @@ function renderRepoTable(profile) {
       a.href = `https://github.com/${r.full}`;
       a.textContent = r.full;
       name.append(a);
-      const via = label[r.source] + (r.method === "prs" && r.source !== "pr" ? " (via merged PRs)" : "");
-      tr.append(name, cell(`+${formatLines(r.adds)}`), cell(`−${formatLines(r.dels)}`), cell(via));
+      const commits = r.loaded < r.commits ? `${r.loaded.toLocaleString()} of ${r.commits.toLocaleString()}` : r.commits.toLocaleString();
+      tr.append(name, cell(commits), cell(`+${formatLines(r.adds)}`), cell(`−${formatLines(r.dels)}`), cell(label[r.source]));
       return tr;
     }),
   );

@@ -111,10 +111,11 @@
         <summary>Repositories counted</summary>
         <div class="table-wrap">
           <table id="repo-table">
-            <thead><tr><th scope="col">Repository</th><th scope="col">Added</th><th scope="col">Deleted</th><th scope="col">Found via</th></tr></thead>
+            <thead><tr><th scope="col">Repository</th><th scope="col">Commits</th><th scope="col">Added</th><th scope="col">Deleted</th><th scope="col">Found via</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
+        <p class="muted" id="ignored-note"></p>
       </details>
     </div>
   </section>
@@ -122,11 +123,11 @@
   <section class="token-section" id="token-section">
     <details class="more" id="token-details">
       <summary>GitHub token <span class="muted">(optional, raises the rate limit)</span></summary>
-      <p>Without a token, GitHub allows 60 API requests an hour from your network, and loading someone takes about two requests per repository, so people with many repositories may load only partly. Progress is saved in your browser, so trying again later carries on where it stopped.</p>
+      <p>Reading someone's history takes one GitHub API request per commit. Without a token, GitHub allows only 60 requests an hour from your network, so a token is close to essential. Progress is saved in your browser, and if a limit stops a load, the chart shows an even sample of the commits read so far and the next try carries on where it stopped.</p>
       <p>A token raises the limit to 5,000 requests an hour, and lets the chart include private repositories the token can read. Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>:</p>
       <ul>
         <li><strong>Public repositories only:</strong> choose “Public repositories” and add no permissions.</li>
-        <li><strong>Including private repositories:</strong> choose “All repositories” (or pick some) and give it read-only access to <em>Pull requests</em>. <em>Metadata</em> (read-only), which covers listing repositories and reading their statistics and languages, is added automatically. A fine-grained token covers one account or organization, so organizations' private repositories need a token whose resource owner is that organization.</li>
+        <li><strong>Including private repositories:</strong> choose “All repositories” (or pick some) and give it read-only access to <em>Contents</em>, which lets it read commits and their diffs. <em>Metadata</em> (read-only) is added automatically. A fine-grained token covers one account or organization, so organizations' private repositories need a token whose resource owner is that organization.</li>
       </ul>
       <p>The token is kept in this browser's local storage and sent only to api.github.com. Results, including those from private repositories, are cached in this browser only.</p>
       <form class="token-form" id="token-form" autocomplete="off">
@@ -142,9 +143,9 @@
   <section class="about" id="about" aria-labelledby="about-title">
     <h2 id="about-title">About</h2>
     <h3>How it works</h3>
-    <p>Everything runs in your browser against GitHub's public API. The tool finds the repositories someone commits to: their own (not forks), ones they are a member of, ones where their pull requests were merged, and ones where GitHub's commit search finds their commits. For each, it reads GitHub's contributor statistics, the weekly lines added and deleted by each author on the default branch, so only accepted commits count. Repositories with more than 10,000 commits have no line counts in those statistics, so there it uses the person's merged pull requests instead.</p>
-    <p>GitHub doesn't break those statistics down by file, so each repository's lines are split between its languages in proportion to the code GitHub detects in it. A repository that is 80% Python and 20% HTML counts four lines of Python for every line of HTML. If someone has used more than eight languages, the seven with the most lines changed get their own colors and the rest are combined as “Other”. Each language keeps its color whatever time span is shown.</p>
-    <p>Only public activity counts, and only commits GitHub can link to the account through its email address. GitHub's statistics list only a repository's top 100 contributors.</p>
+    <p>Everything runs in your browser against GitHub's API. The tool finds the repositories someone commits to: their own (not forks), ones they are a member of, private ones your token can read, ones where their pull requests were merged, and ones where GitHub's commit search finds their commits. In each, it lists their commits on the default branch, so only accepted commits count. Merge commits are skipped, and a commit that appears in several repositories counts once.</p>
+    <p>For each commit it reads the list of changed files and gives each file's added and deleted lines to the language of its extension: <code>.py</code> is Python, <code>.ts</code> is TypeScript, <code>Makefile</code> is Makefile, and so on. Files that aren't code aren't counted: data and config formats (JSON, YAML, TOML, XML), prose (Markdown, text), lockfiles, binaries, and generated or vendored code such as minified bundles or anything under <code>node_modules/</code>, <code>vendor/</code> or <code>dist/</code>. Commits are dated by when they were written. If someone has used more than eight languages, the seven with the most lines changed get their own colors and the rest are combined as “Other”. Each language keeps its color whatever time span is shown.</p>
+    <p>Without a token only public repositories count, and only commits GitHub can link to the account through their email address. Up to 5,000 commits per repository are read.</p>
     <h3>Who made this</h3>
     <p>I'm Alexander Morgan, a generalist developer and cost-optimization contractor. You can find my consulting work at <a href="https://costopconsulting.com">costopconsulting.com</a>, and my projects, writing and publications at <a href="https://alexandermorgan.dev">alexandermorgan.dev</a>.</p>
     <p>This tool is inspired by Rhys Sullivan's <a href="https://areyougoingexponential.rhys.dev/">Are you going exponential?</a> and <a href="https://github.com/RhysSullivan/shiptalkers">shiptalkers</a>. Charts are drawn with <a href="https://pele.run">pele</a>.</p>

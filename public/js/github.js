@@ -1,22 +1,28 @@
 // Fetches a GitHub user's accepted commits and turns them into lines changed
 // per language per month. Everything runs in the browser against the public
-// REST API; an optional token only raises the rate limits.
+// REST API; a token raises the rate limits and adds private repositories.
 //
 // Method (also explained on the page):
 // 1. Find the repositories the user commits to: their own non-fork repos, repos
-//    they are a member of, repos where they had pull requests merged, and repos
-//    where GitHub's commit search finds commits authored by them.
-// 2. For each repo, read /stats/contributors: weekly additions, deletions and
-//    commit counts per author on the default branch, so only accepted
-//    commits count. Repos too large for those stats fall back to the
-//    additions and deletions of the user's merged pull requests.
-// 3. Split each repo's lines between its languages in proportion to the bytes
-//    GitHub reports for each language (/languages).
+//    they are a member of, private repos the token can read, repos where they
+//    had pull requests merged, and repos where GitHub's commit search finds
+//    commits authored by them.
+// 2. In each repo, list the user's commits on the default branch (merge
+//    commits skipped), so only accepted commits count.
+// 3. For each commit, read its diff's file list and give each file's added and
+//    deleted lines to the language of its extension (see languages.js). Files
+//    that aren't code, or are generated or vendored, aren't counted.
+
+import { languageOf } from "./languages.js";
 
 const API = "https://api.github.com";
-const DAY = 86400 * 1000;
-const CACHE_TTL = 12 * 3600 * 1000;
-const CACHE_VERSION = 1;
+// Commit lists can grow, so they are refreshed after 12 hours; a commit's
+// diff never changes, so it is kept for 30 days.
+const LIST_TTL = 12 * 3600 * 1000;
+const DIFF_TTL = 30 * 24 * 3600 * 1000;
+const CACHE_VERSION = 2;
+const MAX_COMMIT_PAGES = 50; // 5,000 commits per repository
+const MAX_FILE_PAGES = 10; // GitHub lists at most 3,000 files per commit
 
 export class RateLimitError extends Error {
   constructor(reset, resource) {
@@ -55,20 +61,6 @@ export function monthRange(start, end) {
     }
   }
   return out;
-}
-
-/**
- * Adds a week of stats (week starting at `weekStart`, seconds) to a month map,
- * splitting it by day so a week that straddles two months is shared between them.
- */
-export function addWeek(months, weekStart, adds, dels, commits) {
-  for (let day = 0; day < 7; day++) {
-    const key = monthKey(weekStart * 1000 + day * DAY);
-    const row = (months[key] ??= [0, 0, 0]);
-    row[0] += adds / 7;
-    row[1] += dels / 7;
-    row[2] += commits / 7;
-  }
 }
 
 // ---------- HTTP ----------
@@ -120,15 +112,6 @@ async function pool(items, limit, fn) {
   if (failure) throw failure;
 }
 
-const sleep = (ms, signal) =>
-  new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(t);
-      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
-    });
-  });
-
 // ---------- cache ----------
 
 /** A short, non-reversible tag for a token, to keep caches apart without storing it. */
@@ -142,12 +125,12 @@ function fingerprint(token) {
 export function browserCache(prefix = "commit-languages") {
   const key = (k) => `${prefix}:v${CACHE_VERSION}:${k}`;
   return {
-    get(k) {
+    get(k, ttl = LIST_TTL) {
       try {
         const raw = localStorage.getItem(key(k));
         if (!raw) return null;
         const value = JSON.parse(raw);
-        return Date.now() - value.at < CACHE_TTL ? value : null;
+        return Date.now() - value.at < ttl ? value : null;
       } catch {
         return null;
       }
@@ -201,7 +184,7 @@ async function discover(client, login, { token, onProgress }) {
 
   const addRepo = (full, source, extra = {}) => {
     const k = full.toLowerCase();
-    if (!repos.has(k)) repos.set(k, { full, source, prs: [], ...extra });
+    if (!repos.has(k)) repos.set(k, { full, source, ...extra });
     return repos.get(k);
   };
 
@@ -244,11 +227,7 @@ async function discover(client, login, { token, onProgress }) {
       `/search/issues?q=${q(`type:pr author:${user.login} is:merged -user:${user.login}`)}&per_page=100&page=${page}`,
     );
     const items = res.data?.items ?? [];
-    for (const item of items) {
-      const full = item.repository_url.split("/repos/")[1];
-      const repo = addRepo(full, "pr");
-      if (item.pull_request?.merged_at) repo.prs.push({ number: item.number, mergedAt: item.pull_request.merged_at });
-    }
+    for (const item of items) addRepo(item.repository_url.split("/repos/")[1], "pr");
     if (items.length < 100) break;
   }
 
@@ -308,25 +287,36 @@ async function discover(client, login, { token, onProgress }) {
   return { user, lower, repos: [...repos.values()] };
 }
 
-// ---------- per-repo stats ----------
+// ---------- commits ----------
 
-/** Pulls the user's weeks out of a /stats/contributors answer. */
-export function contributorMonths(stats, login) {
-  const lower = login.toLowerCase();
-  const entry = (Array.isArray(stats) ? stats : []).find((c) => c?.author?.login?.toLowerCase() === lower);
-  if (!entry) return null;
-  const months = {};
-  let adds = 0;
-  let dels = 0;
-  let commits = 0;
-  for (const w of entry.weeks ?? []) {
-    if (!w.a && !w.d && !w.c) continue;
-    addWeek(months, w.w, w.a, w.d, w.c);
-    adds += w.a;
-    dels += w.d;
-    commits += w.c;
+/** Lines added and deleted per language in one commit's file list. */
+export function tallyFiles(files) {
+  const langs = {};
+  let ignored = 0;
+  for (const f of files ?? []) {
+    const a = f.additions || 0;
+    const d = f.deletions || 0;
+    if (!a && !d) continue;
+    const lang = languageOf(f.filename);
+    if (!lang) {
+      ignored += a + d;
+      continue;
+    }
+    const row = (langs[lang] ??= [0, 0]);
+    row[0] += a;
+    row[1] += d;
   }
-  return { months, adds, dels, commits };
+  return { langs, ignored };
+}
+
+/** A stable shuffle, so a partly loaded history is an even sample of it. */
+function shuffled(items, key) {
+  const hash = (str) => {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 0x01000193);
+    return h >>> 0;
+  };
+  return items.map((item) => [hash(key(item)), item]).sort((a, b) => a[0] - b[0]).map(([, item]) => item);
 }
 
 /**
@@ -339,134 +329,155 @@ export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(gl
   const { request, rate } = client;
   // Results depend on what the token can see, so each token gets its own cache.
   const cacheKey = (s) => `${login.toLowerCase()}:${token ? fingerprint(token) : "public"}:${s}`;
-  let rateLimited = null;
+  const rateMessage = (err) =>
+    `GitHub's ${err.resource === "search" ? "search " : ""}rate limit was reached. ` +
+    `Try again after ${new Date(err.reset).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` +
+    (token ? "." : ", or add a token to raise the limit.");
 
   let found = cache.get(cacheKey("discover"));
   if (!found) {
     try {
       found = await discover(client, login, { token, onProgress });
     } catch (err) {
-      if (err instanceof RateLimitError) {
-        throw new UserError(
-          `GitHub's ${err.resource === "search" ? "search " : ""}rate limit was reached. ` +
-            `Try again after ${new Date(err.reset).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` +
-            (token ? "." : ", or add a token to raise the limit."),
-        );
-      }
+      if (err instanceof RateLimitError) throw new UserError(rateMessage(err));
       throw err;
     }
     cache.set(cacheKey("discover"), found);
   }
   const { user, repos } = found;
+  let rateLimited = null;
 
-  const results = new Map(); // full -> result
-  const todo = [];
+  // Per repo: the user's commits ([sha, authored date]) and, as they load,
+  // each commit's tally ({ sha: [month, { lang: [added, deleted] }, ignored] }).
+  // A commit's diff is the same whoever looks at it, so diffs are cached per
+  // repo, shared between users and tokens.
+  const diffKey = (full) => `diffs:${full.toLowerCase()}`;
+  const state = new Map();
   for (const repo of repos) {
-    const hit = cache.get(cacheKey(`repo:${repo.full.toLowerCase()}`));
-    if (hit) results.set(repo.full, hit);
-    else todo.push(repo);
+    state.set(repo.full, {
+      list: cache.get(cacheKey(`list:${repo.full.toLowerCase()}`))?.commits ?? null,
+      diffs: cache.get(diffKey(repo.full), DIFF_TTL)?.diffs ?? {},
+      dirty: false,
+    });
   }
-
-  const total = repos.length;
-  const progress = () =>
-    onProgress({ phase: "stats", done: results.size, total, message: `Reading commit stats: ${results.size} of ${total} repositories` });
-  const save = (repo, result) => {
-    results.set(repo.full, result);
-    cache.set(cacheKey(`repo:${repo.full.toLowerCase()}`), result);
-    progress();
+  const saveDiffs = (full) => {
+    const st = state.get(full);
+    if (!st.dirty) return;
+    st.dirty = false;
+    cache.set(diffKey(full), { diffs: st.diffs });
   };
 
-  async function languagesFor(repo) {
-    const res = await request(`/repos/${repo.full}/languages`);
-    const langs = res.data && Object.keys(res.data).length ? res.data : { [repo.language || "Unknown"]: 1 };
-    return langs;
-  }
-
-  async function fromPullRequests(repo) {
-    const prs = repo.prs.slice(0, token ? 40 : 10);
-    if (!prs.length) return null;
-    const months = {};
-    let adds = 0;
-    let dels = 0;
-    await pool(prs, 4, async (pr) => {
-      const res = await request(`/repos/${repo.full}/pulls/${pr.number}`);
-      if (!res.data) return;
-      const key = monthKey(pr.mergedAt);
-      const row = (months[key] ??= [0, 0, 0]);
-      row[0] += res.data.additions;
-      row[1] += res.data.deletions;
-      row[2] += res.data.commits;
-      adds += res.data.additions;
-      dels += res.data.deletions;
-    });
-    return adds + dels > 0 ? { months, adds, dels, commits: prs.length, method: "prs" } : null;
-  }
-
-  async function finish(repo, stats) {
-    let result = stats ? { ...stats, method: "stats" } : null;
-    // No entry (not among the top 100 contributors) or no line counts (GitHub
-    // reports zero additions for repos with 10,000+ commits): use merged PRs.
-    if ((!result || result.adds + result.dels === 0) && repo.prs.length) result = (await fromPullRequests(repo)) ?? result;
-    if (!result || result.adds + result.dels === 0) {
-      save(repo, { status: "none" });
-      return;
-    }
-    const languages = await languagesFor(repo);
-    save(repo, { status: "ok", ...result, languages });
-  }
-
-  progress();
-  let waiting = [];
   try {
-    await pool(todo, token ? 6 : 4, async (repo) => {
-      const res = await request(`/repos/${repo.full}/stats/contributors`);
-      if (res.status === 202) waiting.push(repo);
-      else await finish(repo, res.data ? contributorMonths(res.data, user.login) : null);
+    // 1. The user's commits on each repo's default branch.
+    const toList = repos.filter((repo) => !state.get(repo.full).list);
+    let listed = repos.length - toList.length;
+    const listProgress = () =>
+      onProgress({ phase: "list", done: listed, total: repos.length, message: `Finding commits: ${listed} of ${repos.length} repositories` });
+    listProgress();
+    await pool(toList, token ? 6 : 3, async (repo) => {
+      const commits = [];
+      for (let page = 1; page <= MAX_COMMIT_PAGES; page++) {
+        const res = await request(`/repos/${repo.full}/commits?author=${encodeURIComponent(user.login)}&per_page=100&page=${page}`);
+        const items = Array.isArray(res.data) ? res.data : [];
+        for (const c of items) {
+          if ((c.parents?.length ?? 0) > 1) continue; // merge commit
+          commits.push([c.sha, c.commit?.author?.date ?? c.commit?.committer?.date]);
+        }
+        if (items.length < 100) break;
+      }
+      state.get(repo.full).list = commits;
+      cache.set(cacheKey(`list:${repo.full.toLowerCase()}`), { commits });
+      listed++;
+      listProgress();
     });
-    // GitHub computes these stats in the background on first request and answers
-    // 202 meanwhile; ask again after a pause, a few times.
-    for (const delay of [2000, 3000, 5000, 8000, 12000]) {
-      if (!waiting.length) break;
-      onProgress({
-        phase: "stats",
-        done: results.size,
-        total,
-        message: `GitHub is computing stats for ${waiting.length} ${waiting.length === 1 ? "repository" : "repositories"}…`,
-      });
-      await sleep(delay, signal);
-      const again = waiting;
-      waiting = [];
-      await pool(again, 4, async (repo) => {
-        const res = await request(`/repos/${repo.full}/stats/contributors`);
-        if (res.status === 202) waiting.push(repo);
-        else await finish(repo, res.data ? contributorMonths(res.data, user.login) : null);
-      });
+
+    // 2. Each commit's diff, once per commit even if it is in several repos.
+    const seen = new Set();
+    const todo = [];
+    let total = 0;
+    for (const repo of repos) {
+      const st = state.get(repo.full);
+      for (const [sha, date] of st.list) {
+        if (seen.has(sha)) continue;
+        seen.add(sha);
+        total++;
+        if (!st.diffs[sha]) todo.push({ repo, sha, date });
+      }
     }
-    // Still computing: merged PRs are better than nothing.
-    const still = [];
-    for (const repo of waiting) {
-      if (repo.prs.length) await finish(repo, null);
-      else still.push(repo);
-    }
-    waiting = still;
+    let done = total - todo.length;
+    const diffProgress = () =>
+      onProgress({ phase: "diffs", done, total, message: `Reading commits: ${done.toLocaleString()} of ${total.toLocaleString()}` });
+    diffProgress();
+    let sinceSave = 0;
+    await pool(shuffled(todo, (t) => t.sha), token ? 6 : 3, async ({ repo, sha, date }) => {
+      const files = [];
+      for (let page = 1; page <= MAX_FILE_PAGES; page++) {
+        const res = await request(`/repos/${repo.full}/commits/${sha}?per_page=300&page=${page}`);
+        if (!res.data) break;
+        files.push(...(res.data.files ?? []));
+        if (!/rel="next"/.test(res.link)) break;
+      }
+      const { langs, ignored } = tallyFiles(files);
+      const st = state.get(repo.full);
+      st.diffs[sha] = [monthKey(date), langs, ignored];
+      st.dirty = true;
+      done++;
+      diffProgress();
+      if (++sinceSave >= 25) {
+        sinceSave = 0;
+        saveDiffs(repo.full);
+      }
+    });
   } catch (err) {
     if (!(err instanceof RateLimitError)) throw err;
     rateLimited = { reset: err.reset, resource: err.resource };
+  } finally {
+    for (const repo of repos) saveDiffs(repo.full);
   }
 
-  const loaded = [];
+  // Per-repo results, each commit counted in the first repo that has it.
+  const counted = new Set();
+  let totalCommits = 0;
+  let loadedCommits = 0;
+  let ignored = 0;
+  const out = [];
   for (const repo of repos) {
-    const r = results.get(repo.full);
-    if (r?.status === "ok") loaded.push({ ...r, full: repo.full, source: repo.source });
+    const st = state.get(repo.full);
+    if (!st.list) continue;
+    const months = {};
+    let adds = 0;
+    let dels = 0;
+    let commits = 0;
+    let loaded = 0;
+    for (const [sha] of st.list) {
+      if (counted.has(sha)) continue;
+      counted.add(sha);
+      commits++;
+      const diff = st.diffs[sha];
+      if (!diff) continue;
+      loaded++;
+      const [month, langs, skipped] = diff;
+      ignored += skipped;
+      for (const [lang, [a, d]] of Object.entries(langs)) {
+        const row = ((months[month] ??= {})[lang] ??= [0, 0]);
+        row[0] += a;
+        row[1] += d;
+        adds += a;
+        dels += d;
+      }
+    }
+    totalCommits += commits;
+    loadedCommits += loaded;
+    if (commits) out.push({ full: repo.full, source: repo.source, commits, loaded, adds, dels, months });
   }
-  const pending = repos.filter((repo) => !results.has(repo.full)).map((repo) => repo.full);
-  return { user, repos: loaded, scanned: results.size, total, pending, computing: waiting.map((r) => r.full), rateLimited, rate };
+  const listedRepos = repos.filter((repo) => state.get(repo.full).list).length;
+  return { user, repos: out, listedRepos, totalRepos: repos.length, totalCommits, loadedCommits, ignored, rateLimited, rate };
 }
 
 // ---------- aggregation ----------
 
 /**
- * Turns per-repo month maps into per-language monthly arrays.
+ * Turns per-repo month tallies into per-language monthly arrays.
  * Returns { months: ["YYYY-MM", ...], languages: [{ name, adds, dels, total }] }
  * with languages sorted by total lines changed, largest first.
  */
@@ -483,24 +494,20 @@ export function aggregate(profile, now = Date.now()) {
   const index = new Map(months.map((m, i) => [m, i]));
   const byName = new Map();
   for (const repo of profile.repos) {
-    const bytes = Object.entries(repo.languages);
-    const sum = bytes.reduce((s, [, b]) => s + b, 0) || 1;
-    for (const [name, b] of bytes) {
-      const share = b / sum;
-      if (share === 0) continue;
-      let lang = byName.get(name);
-      if (!lang) {
-        lang = { name, adds: new Float64Array(months.length), dels: new Float64Array(months.length), total: 0 };
-        byName.set(name, lang);
-      }
-      for (const [key, [a, d]] of Object.entries(repo.months)) {
-        const i = index.get(key);
-        lang.adds[i] += a * share;
-        lang.dels[i] += d * share;
-        lang.total += (a + d) * share;
+    for (const [key, langs] of Object.entries(repo.months)) {
+      const i = index.get(key);
+      for (const [name, [a, d]] of Object.entries(langs)) {
+        let lang = byName.get(name);
+        if (!lang) {
+          lang = { name, adds: new Float64Array(months.length), dels: new Float64Array(months.length), total: 0 };
+          byName.set(name, lang);
+        }
+        lang.adds[i] += a;
+        lang.dels[i] += d;
+        lang.total += a + d;
       }
     }
   }
-  const languages = [...byName.values()].filter((l) => l.total >= 0.5).sort((a, b) => b.total - a.total);
+  const languages = [...byName.values()].filter((l) => l.total > 0).sort((a, b) => b.total - a.total);
   return { months, languages };
 }
