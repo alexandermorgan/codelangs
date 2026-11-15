@@ -69,8 +69,26 @@ both chart backgrounds.
 Without a token, GitHub allows 60 requests an hour, and a profile costs roughly
 two per repository. Results are cached in `localStorage` for 12 hours, per
 repository, so a rate-limited load resumes where it stopped. Visitors can save
-a fine-grained token (public repos, no permissions) in the page to get 5,000
-requests an hour. It stays in their browser and is sent only to api.github.com.
+a GitHub token in the page to get 5,000 requests an hour. It stays in their
+browser and is sent only to api.github.com.
+
+With a token, the repositories it can read privately (`/user/repos`) are
+scanned too, so private work is included. Token permissions:
+
+| Goal | Repository access | Repository permissions |
+| --- | --- | --- |
+| Public data only | Public repositories | none |
+| Include private repos | All repositories (or selected) | Metadata: read (automatic), Pull requests: read |
+
+Metadata covers `/user/repos`, `/repos/:r`, `/stats/contributors` and
+`/languages`; Pull requests covers the merged-PR fallback. No other
+permissions (Contents, Artifact metadata, account permissions) are needed.
+
+A fine-grained token has one resource owner (your account or one
+organization), so an organization's private repos need a token owned by that
+organization (and the organization may require approval). A classic token with
+the `repo` scope covers every repo you can access, but it also grants write
+access, so prefer fine-grained ones.
 
 ## How the charts use pele
 

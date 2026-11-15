@@ -123,7 +123,12 @@
     <details class="more" id="token-details">
       <summary>GitHub token <span class="muted">(optional, raises the rate limit)</span></summary>
       <p>Without a token, GitHub allows 60 API requests an hour from your network, and loading someone takes about two requests per repository, so people with many repositories may load only partly. Progress is saved in your browser, so trying again later carries on where it stopped.</p>
-      <p>A token raises the limit to 5,000 requests an hour. Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a> with access to public repositories only and no permissions. It is kept in this browser's local storage and sent only to api.github.com.</p>
+      <p>A token raises the limit to 5,000 requests an hour, and lets the chart include private repositories the token can read. Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>:</p>
+      <ul>
+        <li><strong>Public repositories only:</strong> choose “Public repositories” and add no permissions.</li>
+        <li><strong>Including private repositories:</strong> choose “All repositories” (or pick some) and give it read-only access to <em>Pull requests</em>. <em>Metadata</em> (read-only), which covers listing repositories and reading their statistics and languages, is added automatically. A fine-grained token covers one account or organization, so organizations' private repositories need a token whose resource owner is that organization.</li>
+      </ul>
+      <p>The token is kept in this browser's local storage and sent only to api.github.com. Results, including those from private repositories, are cached in this browser only.</p>
       <form class="token-form" id="token-form" autocomplete="off">
         <label class="sr-only" for="token">GitHub token</label>
         <input id="token" type="password" placeholder="github_pat_…" spellcheck="false" data-lpignore="true">

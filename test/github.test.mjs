@@ -61,6 +61,23 @@ test("a rate limit returns what loaded, and the cache resumes from there", async
   assert.equal(second.repos.length, 7);
 });
 
+test("with a token, private repos the token can read are included", async () => {
+  const gh = createFakeGitHub({ computingOnce: [] });
+  const profile = await loadProfile("octo-dev", { token: "github_pat_test", fetchImpl: gh.fetchImpl, cache: memoryCache() });
+  const secret = profile.repos.find((r) => r.full === "octo-dev/secret");
+  assert.ok(secret, "private repo counted");
+  assert.equal(secret.source, "private");
+  assert.equal(profile.repos.length, 8);
+});
+
+test("a token gets its own cache, so adding one picks up private repos", async () => {
+  const cache = memoryCache();
+  const pub = await loadProfile("octo-dev", { fetchImpl: createFakeGitHub({ computingOnce: [] }).fetchImpl, cache });
+  assert.equal(pub.repos.length, 7);
+  const priv = await loadProfile("octo-dev", { token: "github_pat_test", fetchImpl: createFakeGitHub({ computingOnce: [] }).fetchImpl, cache });
+  assert.equal(priv.repos.length, 8);
+});
+
 test("unknown users and organizations get a clear error", async () => {
   const gh = createFakeGitHub();
   await assert.rejects(loadProfile("nobody-here", { fetchImpl: gh.fetchImpl }), /no GitHub user/);

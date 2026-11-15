@@ -394,7 +394,7 @@ function renderSummary(view) {
 }
 
 function renderRepoTable(profile) {
-  const label = { owned: "Own repository", member: "Member", pr: "Merged pull requests", commits: "Commit search" };
+  const label = { owned: "Own repository", member: "Member", private: "Private (via token)", pr: "Merged pull requests", commits: "Commit search" };
   const tbody = $("repo-table").querySelector("tbody");
   const repos = [...profile.repos].sort((a, b) => b.adds + b.dels - (a.adds + a.dels));
   tbody.replaceChildren(

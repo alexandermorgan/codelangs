@@ -131,6 +131,13 @@ const sleep = (ms, signal) =>
 
 // ---------- cache ----------
 
+/** A short, non-reversible tag for a token, to keep caches apart without storing it. */
+function fingerprint(token) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < token.length; i++) h = Math.imul(h ^ token.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(36);
+}
+
 /** A cache backed by localStorage (or nothing, where storage is unavailable). */
 export function browserCache(prefix = "commit-languages") {
   const key = (k) => `${prefix}:v${CACHE_VERSION}:${k}`;
@@ -207,6 +214,23 @@ async function discover(client, login, { token, onProgress }) {
       for (const r of list) {
         if (r.fork || r.size === 0) continue;
         addRepo(r.full_name, type === "owner" ? "owned" : "member", { language: r.language });
+      }
+      if (list.length < 100) break;
+    }
+  }
+
+  // With a token: private repos it can read (the lists above only show public
+  // ones). The user's commits are found in them the same way as anywhere else.
+  if (token) {
+    onProgress({ phase: "repos", message: "Listing private repositories the token can read…" });
+    for (let page = 1; page <= 10; page++) {
+      const res = await request(
+        `/user/repos?affiliation=owner,collaborator,organization_member&visibility=private&per_page=100&page=${page}`,
+      );
+      const list = res.data ?? [];
+      for (const r of list) {
+        if (r.fork || r.size === 0) continue;
+        addRepo(r.full_name, "private", { language: r.language });
       }
       if (list.length < 100) break;
     }
@@ -313,7 +337,8 @@ export function contributorMonths(stats, login) {
 export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(globalThis), signal, onProgress = () => {}, cache = memoryCache() } = {}) {
   const client = createClient({ token, fetchImpl, signal });
   const { request, rate } = client;
-  const cacheKey = (s) => `${login.toLowerCase()}:${s}`;
+  // Results depend on what the token can see, so each token gets its own cache.
+  const cacheKey = (s) => `${login.toLowerCase()}:${token ? fingerprint(token) : "public"}:${s}`;
   let rateLimited = null;
 
   let found = cache.get(cacheKey("discover"));

@@ -49,6 +49,15 @@ const repos = {
     languages: { Rust: 40000, Shell: 2000 },
     weeks: weeks((t) => [between(t, 0.55, 1) * 1100 * wave(t, 9), between(t, 0.55, 1) * 700 * wave(t, 11), 5]),
   },
+  // Private: only listed (and readable) with a token.
+  "octo-dev/secret": {
+    owner: "octo-dev",
+    private: true,
+    created_at: "2023-01-01T00:00:00Z",
+    language: "Go",
+    languages: { Go: 30000 },
+    weeks: weeks((t) => [between(t, 0.7, 1) * 800, between(t, 0.7, 1) * 200, 4]),
+  },
   "octo-dev/somefork": { owner: "octo-dev", fork: true, created_at: "2020-01-01T00:00:00Z", language: "C", languages: { C: 1 }, weeks: [] },
   "acme/infra": {
     owner: "acme",
@@ -105,8 +114,9 @@ export function createFakeGitHub({ computingOnce = ["octo-dev/ml"], rateLimitAft
     return { full_name: full, fork: Boolean(r.fork), size: 100, language: r.language, created_at: r.created_at, html_url: `https://github.com/${full}` };
   };
 
-  function handle(href) {
+  function handle(href, headers = {}) {
     const url = new URL(href);
+    const authed = Boolean(headers.Authorization || headers.authorization);
     const path = url.pathname;
     calls++;
     if (calls > rateLimitAfter && !path.startsWith("/search/")) {
@@ -119,9 +129,15 @@ export function createFakeGitHub({ computingOnce = ["octo-dev/ml"], rateLimitAft
     }
     if ((m = path.match(/^\/users\/([^/]+)\/repos$/))) {
       const type = url.searchParams.get("type");
-      const list = Object.keys(repos).filter((full) => (type === "owner" ? repos[full].owner === "octo-dev" : repos[full].member));
+      const list = Object.keys(repos).filter((full) => !repos[full].private && (type === "owner" ? repos[full].owner === "octo-dev" : repos[full].member));
       return json(url.searchParams.get("page") === "1" ? list.map(repoJson) : []);
     }
+    if (path === "/user/repos") {
+      if (!authed) return json({ message: "Requires authentication" }, 401);
+      const list = Object.keys(repos).filter((full) => repos[full].private);
+      return json(url.searchParams.get("page") === "1" ? list.map(repoJson) : []);
+    }
+    if ((m = path.match(/^\/repos\/([^/]+\/[^/]+)/)) && repos[m[1]]?.private && !authed) return json({ message: "Not Found" }, 404);
     if (path === "/search/issues") {
       const items = [];
       for (const [full, r] of Object.entries(repos)) for (const pr of r.prs ?? []) items.push({ number: pr.number, repository_url: `https://api.github.com/repos/${full}`, pull_request: { merged_at: pr.merged_at } });
@@ -151,8 +167,8 @@ export function createFakeGitHub({ computingOnce = ["octo-dev/ml"], rateLimitAft
     return json({ message: `Unhandled ${path}` }, 404);
   }
 
-  const fetchImpl = async (href) => {
-    const r = handle(href);
+  const fetchImpl = async (href, init = {}) => {
+    const r = handle(href, init.headers);
     return new Response(r.body || null, { status: r.status, headers: r.headers });
   };
   return { handle, fetchImpl, calls: () => calls };
