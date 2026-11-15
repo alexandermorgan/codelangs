@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { aggregate, createPacer, loadProfile, memoryCache, monthRange, tallyFiles } from "../public/js/github.js";
+import { aggregate, createPacer, loadProfile, memoryCache, monthRange, prMatchesCommit, tallyFiles } from "../public/js/github.js";
 import { languageOf } from "../public/js/languages.js";
 import { createFakeGitHub, FIXTURE } from "./fixture.mjs";
 
@@ -53,6 +53,25 @@ test("data, prose, lockfiles and vendored or generated files are not counted", (
   ]) {
     assert.equal(languageOf(path), null, path);
   }
+});
+
+test("names of built-in object properties are not languages", () => {
+  for (const path of ["src/x.constructor", "constructor", "a/toString", "b.hasOwnProperty", "c.__proto__", "valueOf"]) {
+    assert.equal(languageOf(path), null, path);
+  }
+});
+
+test(".h headers follow the rest of their commit", () => {
+  const cpp = tallyFiles([{ filename: "a.cpp", additions: 10, deletions: 0 }, { filename: "a.h", additions: 4, deletions: 1 }]);
+  assert.deepEqual(cpp.langs, { "C++": [14, 1] });
+  const c = tallyFiles([{ filename: "a.c", additions: 10, deletions: 0 }, { filename: "a.h", additions: 4, deletions: 1 }]);
+  assert.deepEqual(c.langs, { C: [14, 1] });
+  const cppOnly = tallyFiles([{ filename: "a.h", additions: 3, deletions: 0, patch: "+namespace JSC {\n+class Walk;\n+}" }]);
+  assert.deepEqual(cppOnly.langs, { "C++": [3, 0] });
+  const cOnly = tallyFiles([{ filename: "a.h", additions: 2, deletions: 0, patch: "+int f(void);\n+#define X 1" }]);
+  assert.deepEqual(cOnly.langs, { C: [2, 0] });
+  // GraphQL file lists say `path`, not `filename`.
+  assert.deepEqual(tallyFiles([{ path: "x.py", additions: 1, deletions: 0 }]).langs, { Python: [1, 0] });
 });
 
 test("tallyFiles adds up lines per language and reports what it skipped", () => {
@@ -217,6 +236,41 @@ test("each language knows how many commits touched it", async () => {
     assert.equal(lang.commits, touching, lang.name);
   }
   assert.equal(profile.commitLangs.length <= profile.loadedCommits, true);
+});
+
+test("PR-based repos are read from merged PRs, falling back where a PR doesn't match its commit", async () => {
+  const gh = createFakeGitHub();
+  const profile = await loadProfile("octo-dev", { token: "github_pat_test", requestsPerSecond: Infinity, fetchImpl: gh.fetchImpl, cache: memoryCache() });
+  const prs = gh.prsOf("octo-dev/ml");
+  const usable = prs.filter(prMatchesCommit).length;
+  assert.ok(usable > 100 && usable < prs.length, `${usable} of ${prs.length} PRs usable`);
+  assert.equal(profile.fromPullRequests, usable);
+  // Only the commits whose PRs couldn't be trusted were read one by one.
+  assert.equal(gh.detailCalls()["octo-dev/ml"], prs.length - usable);
+  assert.ok(gh.graphqlCalls() >= Math.ceil(prs.length / 50));
+  // And the numbers are exactly what reading every commit gives.
+  const want = expected({ withPrivate: true });
+  const got = Object.fromEntries(aggregate(profile).languages.map((l) => [l.name, l.total]));
+  assert.deepEqual(got, want.langs);
+});
+
+test("without a token, or in repos that aren't PR-based, commits are read one by one", async () => {
+  const gh = createFakeGitHub();
+  await loadProfile("octo-dev", { requestsPerSecond: Infinity, fetchImpl: gh.fetchImpl, cache: memoryCache() });
+  assert.equal(gh.graphqlCalls(), 0);
+  const gh2 = createFakeGitHub();
+  await loadProfile("octo-dev", { token: "github_pat_test", requestsPerSecond: Infinity, fetchImpl: gh2.fetchImpl, cache: memoryCache() });
+  // webapp's commits aren't squash-merged PRs, so GraphQL is never asked about it.
+  assert.ok(gh2.detailCalls()["octo-dev/webapp"] > 300);
+});
+
+test("more merged PRs than one search returns are fetched in date ranges", async () => {
+  const gh = createFakeGitHub();
+  const profile = await loadProfile("octo-dev", { token: "github_pat_test", requestsPerSecond: Infinity, searchCap: 60, fetchImpl: gh.fetchImpl, cache: memoryCache() });
+  const usable = gh.prsOf("octo-dev/ml").filter(prMatchesCommit).length;
+  assert.equal(profile.fromPullRequests, usable);
+  const got = Object.fromEntries(aggregate(profile).languages.map((l) => [l.name, l.total]));
+  assert.deepEqual(got, expected({ withPrivate: true }).langs);
 });
 
 test("unknown users get a clear error", async () => {

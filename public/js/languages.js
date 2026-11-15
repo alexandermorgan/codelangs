@@ -91,18 +91,42 @@ const IGNORED_PATHS = [
   /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|composer\.lock|go\.sum|mix\.lock|flake\.lock|uv\.lock|pubspec\.lock|Podfile\.lock)$/i,
 ];
 
+// Own keys only: a file named "x.constructor" or "toString" must not match
+// the built-in properties every JavaScript object has.
+const own = (table, key) => (Object.hasOwn(table, key) ? table[key] : null);
+
 /**
  * The language of a changed file, or null when the file isn't counted
- * (not code, or generated/vendored).
+ * (not code, or generated/vendored). Headers (.h) come back as "C"; see
+ * headerLanguage for working out whether a commit's headers are C++.
  */
 export function languageOf(path) {
   if (!path) return null;
   if (IGNORED_PATHS.some((re) => re.test(path))) return null;
   const name = path.slice(path.lastIndexOf("/") + 1);
   const lower = name.toLowerCase();
-  if (FILENAMES[lower]) return FILENAMES[lower];
+  const byName = own(FILENAMES, lower);
+  if (byName) return byName;
   for (const [re, lang] of EXTENSION_RULES) if (re.test(path)) return lang;
   const dot = lower.lastIndexOf(".");
   if (dot <= 0) return null;
-  return EXTENSIONS[lower.slice(dot + 1)] ?? null;
+  return own(EXTENSIONS, lower.slice(dot + 1));
+}
+
+/** A C-family header whose language depends on the code around it. */
+export function isHeader(path) {
+  return /\.h$/i.test(path ?? "");
+}
+
+const CPP_SIGNS = /\b(class|namespace|template\s*<|typename|constexpr|nullptr|std::|public:|private:|protected:|virtual|operator\s*[^\s\w])/;
+
+/**
+ * The language of a commit's .h files: whichever of C and C++ the commit's
+ * other files are mostly in, and otherwise (a commit of only headers) C++ if
+ * the headers' changed lines look like C++, else C.
+ */
+export function headerLanguage(cLines, cppLines, patches = []) {
+  if (cppLines > cLines) return "C++";
+  if (cLines > cppLines) return "C";
+  return patches.some((p) => CPP_SIGNS.test(p ?? "")) ? "C++" : "C";
 }

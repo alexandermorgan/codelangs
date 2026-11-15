@@ -13,15 +13,16 @@
 //    deleted lines to the language of its extension (see languages.js). Files
 //    that aren't code, or are generated or vendored, aren't counted.
 
-import { languageOf } from "./languages.js";
+import { headerLanguage, isHeader, languageOf } from "./languages.js";
 
 const API = "https://api.github.com";
 // Commit lists can grow, so they are refreshed after 12 hours; a commit's
 // diff never changes, so it is kept for 30 days.
 const LIST_TTL = 12 * 3600 * 1000;
 const DIFF_TTL = 30 * 24 * 3600 * 1000;
-// Bumped whenever cached data changes meaning (v3: JS/TS merged).
-const CACHE_VERSION = 3;
+// Bumped whenever cached data changes meaning (v3: JS/TS merged; v4: headers
+// follow their commit, and commit lists note squash-merged PRs).
+const CACHE_VERSION = 4;
 const MAX_COMMIT_PAGES = 50; // 5,000 commits per repository
 const MAX_FILE_PAGES = 10; // GitHub lists at most 3,000 files per commit
 
@@ -116,7 +117,7 @@ function sleep(ms, signal) {
   });
 }
 
-function createClient({ token, fetchImpl, signal, onSlowDown = () => {}, minBackoff = 60000, requestsPerSecond = REQUESTS_PER_SECOND }) {
+export function createClient({ token, fetchImpl = fetch.bind(globalThis), signal, onSlowDown = () => {}, minBackoff = 60000, requestsPerSecond = REQUESTS_PER_SECOND }) {
   const rate = {};
   const pacer = createPacer(requestsPerSecond, BURST);
   async function request(path, attempt = 0) {
@@ -153,7 +154,33 @@ function createClient({ token, fetchImpl, signal, onSlowDown = () => {}, minBack
     }
     return { status: res.status, data: await res.json(), link: res.headers.get("link") || "" };
   }
-  return { request, rate };
+
+  /** A GraphQL query (needs a token). Resolves with `data`; throws if GitHub refuses it. */
+  async function graphql(query, variables, attempt = 0) {
+    await pacer.take(signal);
+    const res = await fetchImpl(`${API}/graphql`, {
+      method: "POST",
+      headers: { Accept: "application/vnd.github+json", "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ query, variables }),
+      signal,
+    });
+    if (res.status === 401) throw new UserError("GitHub rejected the token. Check it or remove it, then try again.");
+    if ((res.status === 403 || res.status === 429) && attempt < 4) {
+      const retryAfter = Number(res.headers.get("retry-after"));
+      if (res.headers.get("x-ratelimit-remaining") !== "0" && retryAfter) {
+        const wait = Math.max(minBackoff * 2 ** attempt, retryAfter * 1000);
+        pacer.pause(Date.now() + wait);
+        onSlowDown(Date.now() + wait);
+        return graphql(query, variables, attempt + 1);
+      }
+    }
+    if (!res.ok) throw new Error(`GitHub GraphQL answered ${res.status}`);
+    const body = await res.json();
+    if (!body.data) throw new Error(body.errors?.[0]?.message ?? "GitHub GraphQL returned no data");
+    return body.data;
+  }
+
+  return { request, graphql, rate };
 }
 
 /** Runs `fn` over `items`, `limit` at a time. Stops starting new ones once one throws. */
@@ -355,24 +382,110 @@ async function discover(client, login, { token, onProgress }) {
   return { user, lower, repos: [...repos.values()] };
 }
 
+// ---------- merged pull requests ----------
+
+// A merged PR's file list comes with each file's line counts and no patch
+// text, 50 PRs to a request, where reading the same commits one by one takes
+// a request each and carries every patch.
+const PR_QUERY = `query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 50, after: $after) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number
+        additions
+        deletions
+        mergeCommit { oid additions deletions }
+        files(first: 100) { totalCount nodes { path additions deletions } }
+      }
+    }
+  }
+}`;
+
+/** A commit message that ends like a squash-merged PR's: "Fix the thing (#123)". */
+export const SQUASH_MESSAGE = /\(#\d+\)\s*$/;
+
+/**
+ * True when a PR's files are exactly its merge commit's files: the merge
+ * commit is the squashed PR (same added and deleted totals) and the file list
+ * is complete. Anything else (a rebase of several commits, a merge commit, a
+ * PR of more than 100 files) is read commit by commit instead.
+ */
+export function prMatchesCommit(pr) {
+  return Boolean(
+    pr?.mergeCommit &&
+      pr.files &&
+      pr.files.nodes.length >= pr.files.totalCount &&
+      pr.additions === pr.mergeCommit.additions &&
+      pr.deletions === pr.mergeCommit.deletions,
+  );
+}
+
+const day = (d) => d.toISOString().slice(0, 10);
+
+/**
+ * The user's merged PRs in one repo, by merge commit SHA. GitHub's search
+ * returns at most 1,000 results per query, so a larger set is split into
+ * date ranges until each fits.
+ */
+export async function fetchMergedPRs(client, full, login, { searchCap = 1000, onPage = () => {}, since = new Date("2008-01-01T00:00:00Z") } = {}) {
+  const byCommit = new Map();
+  async function range(from, to) {
+    let after = null;
+    let first = true;
+    do {
+      const q = `repo:${full} is:pr is:merged author:${login} merged:${day(from)}..${day(to)}`;
+      const { search } = await client.graphql(PR_QUERY, { q, after });
+      if (first && search.issueCount > searchCap && to - from > 86400000) {
+        const mid = new Date(from.getTime() + Math.floor((to - from) / 2 / 86400000) * 86400000);
+        await range(from, mid);
+        await range(new Date(mid.getTime() + 86400000), to);
+        return;
+      }
+      first = false;
+      for (const pr of search.nodes ?? []) if (pr?.mergeCommit) byCommit.set(pr.mergeCommit.oid, pr);
+      onPage(byCommit.size);
+      after = search.pageInfo?.hasNextPage ? search.pageInfo.endCursor : null;
+    } while (after);
+  }
+  await range(since, new Date(new Date().toISOString().slice(0, 10) + "T00:00:00Z"));
+  return byCommit;
+}
+
 // ---------- commits ----------
 
-/** Lines added and deleted per language in one commit's file list. */
+/**
+ * Lines added and deleted per language in one commit's file list (REST
+ * `filename` or GraphQL `path`). Headers (.h) go to C or C++ by the rest of
+ * the commit; see headerLanguage.
+ */
 export function tallyFiles(files) {
   const langs = {};
   let ignored = 0;
+  const headers = [];
+  const add = (lang, a, d) => {
+    const row = (langs[lang] ??= [0, 0]);
+    row[0] += a;
+    row[1] += d;
+  };
   for (const f of files ?? []) {
+    const path = f.filename ?? f.path;
     const a = f.additions || 0;
     const d = f.deletions || 0;
     if (!a && !d) continue;
-    const lang = languageOf(f.filename);
+    const lang = languageOf(path);
     if (!lang) {
       ignored += a + d;
       continue;
     }
-    const row = (langs[lang] ??= [0, 0]);
-    row[0] += a;
-    row[1] += d;
+    if (isHeader(path)) headers.push({ a, d, patch: f.patch });
+    else add(lang, a, d);
+  }
+  if (headers.length) {
+    const lines = (lang) => (langs[lang] ? langs[lang][0] + langs[lang][1] : 0);
+    const lang = headerLanguage(lines("C"), lines("C++"), headers.map((h) => h.patch));
+    for (const h of headers) add(lang, h.a, h.d);
   }
   return { langs, ignored };
 }
@@ -403,6 +516,8 @@ export async function loadProfile(
     snapshotEvery = 5000,
     minBackoff = 60000,
     requestsPerSecond = REQUESTS_PER_SECOND,
+    usePullRequests = true,
+    searchCap = 1000,
     cache = memoryCache(),
   } = {},
 ) {
@@ -440,6 +555,8 @@ export async function loadProfile(
   let rateLimited = null;
   let timer = null;
   const denied = [];
+  const prRouteFailures = [];
+  let fromPullRequests = 0;
 
   // Per repo: the user's commits ([sha, authored date]) and, as they load,
   // each commit's tally ({ sha: [month, { lang: [added, deleted] }, ignored] }).
@@ -450,6 +567,7 @@ export async function loadProfile(
   for (const repo of repos) {
     state.set(repo.full, {
       list: cache.get(cacheKey(`list:${repo.full.toLowerCase()}`))?.commits ?? null,
+      squashed: cache.get(cacheKey(`list:${repo.full.toLowerCase()}`))?.squashed ?? 0,
       diffs: cache.get(diffKey(repo.full), DIFF_TTL)?.diffs ?? {},
       dirty: false,
     });
@@ -470,6 +588,7 @@ export async function loadProfile(
     listProgress();
     await pool(toList, token ? CONCURRENCY : 4, async (repo) => {
       const commits = [];
+      let squashed = 0;
       for (let page = 1; page <= MAX_COMMIT_PAGES; page++) {
         const res = await request(`/repos/${repo.full}/commits?author=${encodeURIComponent(user.login)}&per_page=100&page=${page}`);
         // 403/404 on a repo we were told about: the token can see the repo
@@ -487,16 +606,51 @@ export async function loadProfile(
         for (const c of items) {
           if ((c.parents?.length ?? 0) > 1) continue; // merge commit
           commits.push([c.sha, c.commit?.author?.date ?? c.commit?.committer?.date]);
+          if (SQUASH_MESSAGE.test((c.commit?.message ?? "").split("\n")[0])) squashed++;
         }
         if (items.length < 100) break;
       }
       state.get(repo.full).list = commits;
-      cache.set(cacheKey(`list:${repo.full.toLowerCase()}`), { commits });
+      state.get(repo.full).squashed = squashed;
+      cache.set(cacheKey(`list:${repo.full.toLowerCase()}`), { commits, squashed });
       listed++;
       listProgress();
     });
 
-    // 2. Each commit's diff, once per commit even if it is in several repos.
+    // 2. In PR-based repos (most of the user's commits are squash-merged
+    // PRs), read their merged PRs' file lists in bulk. Needs a token, since
+    // GitHub's GraphQL API always does. A repo where that fails is simply read
+    // commit by commit below.
+    if (token && usePullRequests) {
+      for (const repo of repos) {
+        const st = state.get(repo.full);
+        const missing = st.list.filter(([sha]) => !st.diffs[sha]);
+        if (missing.length < 5 || st.squashed < Math.max(5, st.list.length * 0.3)) continue;
+        onProgress({ phase: "prs", message: `Reading merged pull requests in ${repo.full}…` });
+        let prs;
+        try {
+          prs = await fetchMergedPRs(client, repo.full, user.login, {
+            searchCap,
+            onPage: (n) => onProgress({ phase: "prs", message: `Reading merged pull requests in ${repo.full}: ${n.toLocaleString()}` }),
+          });
+        } catch (err) {
+          if (err instanceof UserError || signal?.aborted) throw err;
+          prRouteFailures.push(repo.full);
+          continue;
+        }
+        for (const [sha, date] of missing) {
+          const pr = prs.get(sha);
+          if (!prMatchesCommit(pr)) continue;
+          const { langs, ignored } = tallyFiles(pr.files.nodes);
+          st.diffs[sha] = [monthKey(date), langs, ignored];
+          st.dirty = true;
+          fromPullRequests++;
+        }
+        saveDiffs(repo.full);
+      }
+    }
+
+    // 3. Each remaining commit's diff, once per commit even if it is in several repos.
     const seen = new Set();
     const todo = [];
     let total = 0;
@@ -602,6 +756,8 @@ export async function loadProfile(
     rateLimited,
     rate,
     denied: [...denied],
+    fromPullRequests,
+    prRouteFailures: [...prRouteFailures],
     privateRepos,
     usedToken: Boolean(token),
   };

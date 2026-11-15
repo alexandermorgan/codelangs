@@ -89,8 +89,28 @@ All requests go from the visitor's browser to the GitHub REST API:
    - generated or vendored code (`node_modules/`, `vendor/`, `dist/`,
      `*.min.js`, protobuf output, …)
 
-   The page reports how many lines were left out. Commits are dated by
-   their author date.
+   A `.h` header goes to C++ when the rest of its commit is mostly C++, to C
+   when it's mostly C, and otherwise by its own code (`class`, `namespace`,
+   `template`, …). The page reports how many lines were left out. Commits are
+   dated by their author date.
+4. **Merged pull requests (with a token):** in a PR-based repo, where at least
+   30% of the user's commits end like a squash-merged PR ("… (#123)"), the
+   user's merged PRs are read through GitHub's GraphQL API instead: 50 PRs per
+   request, each with its file list and per-file line counts but no patch text.
+   A commit uses its PR's file list only when the PR's merge commit is that
+   exact commit, the added and deleted totals match, and the file list is
+   complete (100 files or fewer). Anything else (rebased or merge-commit PRs,
+   bigger PRs) is read commit by commit. Searches over 1,000 PRs are split
+   into date ranges.
+
+   To compare the two routes on real commits:
+
+   ```bash
+   GH_TOKEN=github_pat_… bun scripts/check-pr-route.mjs <user> <owner/repo>
+   ```
+
+   It prints, for each recent commit, whether its PR's file list gives exactly
+   the same language totals as reading the commit itself.
 
 Color follows the language, not its rank in the current range. The seven
 languages with the most lines over the user's whole history get fixed colors,
@@ -123,9 +143,11 @@ what's missing.
 | Goal | Repository access | Repository permissions |
 | --- | --- | --- |
 | Public data only | Public repositories | none |
-| Include private repos | All repositories (or selected) | Contents: read (Metadata: read is added automatically) |
+| Include private repos | All repositories (or selected) | Contents: read, Pull requests: read (Metadata: read is added automatically) |
 
-Contents covers listing commits and reading their diffs. If a token can see
+Contents covers listing commits and reading their diffs. Pull requests lets
+the merged-PR route read private repos' PRs; without it those repos are read
+commit by commit, which is slower but gives the same numbers. If a token can see
 a private repo but can't read its commits, the page names the repo and says
 the token needs Contents. Saving a token (including the same one after editing
 it on GitHub) clears the cached repo and commit lists, so changes take effect

@@ -56,10 +56,21 @@ const repos = {
       0.5,
     ),
   },
+  // PR-based: every commit is a squash-merged PR ("… (#123)").
   "octo-dev/ml": {
     owner: "octo-dev",
     created_at: "2019-01-01T00:00:00Z",
-    commits: history([["model/train.py", 0.7], ["notebooks/explore.ipynb", 0.2], ["config.yaml", 0.1]], (t) => between(t, 0.3, 1) * 2000 * t),
+    prBased: true,
+    commits: [
+      ...history([["model/train.py", 0.7], ["notebooks/explore.ipynb", 0.2], ["config.yaml", 0.1]], (t) => between(t, 0.3, 1) * 2000 * t),
+      // A PR of 150 files: GraphQL lists only 100, so this one is read directly.
+      {
+        sha: "c".repeat(40),
+        date: "2024-02-02T12:00:00Z",
+        parents: 1,
+        files: Array.from({ length: 150 }, (_, i) => ({ filename: `model/layers/l${i}.py`, additions: 4, deletions: 1 })),
+      },
+    ],
   },
   "octo-dev/cli": {
     owner: "octo-dev",
@@ -118,6 +129,8 @@ export const FIXTURE = { repos };
  */
 export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "full", slowDownAt = 0 } = {}) {
   let calls = 0;
+  const detailCalls = {}; // repo -> REST commit-detail requests
+  let graphqlCalls = 0;
   const json = (body, status = 200, extra = {}) => ({
     status,
     headers: {
@@ -134,12 +147,47 @@ export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "ful
     return { full_name: full, fork: Boolean(r.fork), private: Boolean(r.private), size: 100, created_at: r.created_at };
   };
 
-  function handle(href, headers = {}) {
+  /** The squash-merged PR behind each commit of a PR-based repo. */
+  function prsOf(full) {
+    const r = repos[full];
+    if (!r?.prBased) return [];
+    return r.commits
+      .filter((c) => c.parents === 1)
+      .map((c, i) => {
+        const adds = c.files.reduce((n, f) => n + f.additions, 0);
+        const dels = c.files.reduce((n, f) => n + f.deletions, 0);
+        return {
+          number: 1000 + i,
+          mergedAt: c.date,
+          // Every 7th PR was rebased, not squashed: its totals don't match the commit.
+          additions: i % 7 === 3 ? adds + 5 : adds,
+          deletions: dels,
+          mergeCommit: { oid: c.sha, additions: adds, deletions: dels },
+          files: { totalCount: c.files.length, nodes: c.files.slice(0, 100).map((f) => ({ path: f.filename, additions: f.additions, deletions: f.deletions })) },
+        };
+      });
+  }
+
+  function graphql(body, authed) {
+    graphqlCalls++;
+    if (!authed) return json({ message: "This endpoint requires you to be authenticated." }, 401);
+    const { variables } = JSON.parse(body);
+    const repo = variables.q.match(/repo:(\S+)/)[1];
+    const [, from, to] = variables.q.match(/merged:(\S+)\.\.(\S+)/);
+    const all = prsOf(repo).filter((pr) => pr.mergedAt.slice(0, 10) >= from && pr.mergedAt.slice(0, 10) <= to);
+    const offset = Number(variables.after ?? 0);
+    const nodes = all.slice(offset, offset + 50);
+    const more = offset + 50 < Math.min(all.length, 1000);
+    return json({ data: { search: { issueCount: all.length, pageInfo: { hasNextPage: more, endCursor: more ? String(offset + 50) : null }, nodes } } });
+  }
+
+  function handle(href, headers = {}, body = null) {
     const url = new URL(href);
     const path = url.pathname;
     const page = Number(url.searchParams.get("page") || 1);
     const authed = Boolean(headers.Authorization || headers.authorization);
     calls++;
+    if (path === "/graphql") return graphql(body, authed);
     // GitHub's secondary ("slow down") limit, once, on request number `slowDownAt`.
     if (calls === slowDownAt) {
       return json({ message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again." }, 403, { "retry-after": "1" });
@@ -194,11 +242,12 @@ export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "ful
         list.slice((page - 1) * per, page * per).map((c) => ({
           sha: c.sha,
           parents: Array.from({ length: c.parents }, (_, i) => ({ sha: `p${i}` })),
-          commit: { author: { date: c.date }, committer: { date: c.date } },
+          commit: { author: { date: c.date }, committer: { date: c.date }, message: repos[m[1]].prBased && c.parents === 1 ? `Change things (#${c.sha.slice(-4)})\n\nDetails.` : "Change things" },
         })),
       );
     }
     if ((m = path.match(/^\/repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]+)$/))) {
+      detailCalls[m[1]] = (detailCalls[m[1]] ?? 0) + 1;
       const c = repos[m[1]].commits.find((x) => x.sha === m[2]);
       if (!c) return json({ message: "No commit found" }, 422);
       const per = Number(url.searchParams.get("per_page") || 300);
@@ -211,8 +260,8 @@ export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "ful
   }
 
   const fetchImpl = async (href, init = {}) => {
-    const r = handle(href, init.headers);
+    const r = handle(href, init.headers, init.body);
     return new Response(r.body || null, { status: r.status, headers: r.headers });
   };
-  return { handle, fetchImpl, calls: () => calls };
+  return { handle, fetchImpl, calls: () => calls, detailCalls: () => ({ ...detailCalls }), graphqlCalls: () => graphqlCalls, prsOf };
 }
