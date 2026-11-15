@@ -122,7 +122,7 @@ function fingerprint(token) {
 }
 
 /** A cache backed by localStorage (or nothing, where storage is unavailable). */
-export function browserCache(prefix = "commit-languages") {
+export function browserCache(prefix = "codelangs") {
   const key = (k) => `${prefix}:v${CACHE_VERSION}:${k}`;
   return {
     get(k, ttl = LIST_TTL) {

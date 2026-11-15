@@ -1,5 +1,5 @@
 {
-  "name": "commit-languages",
+  "name": "codelangs",
   "version": "0.1.0",
   "private": true,
   "description": "Chart the programming languages in a GitHub user's accepted commits over time.",

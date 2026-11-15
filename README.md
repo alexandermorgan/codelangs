@@ -1,4 +1,4 @@
-# What do you code in?
+# Code Langs
 
 Enter a GitHub username and see the programming languages of that person's
 accepted commits over time, measured in lines of code changed. It is modelled
@@ -12,7 +12,11 @@ Charts are drawn with [pele](https://pele.run).
 ## Run it locally
 
 ```bash
-npm install
+git clone https://github.com/alexandermorgan/codelangs.git
+```
+
+```bash
+cd codelangs && npm install
 ```
 
 ```bash

@@ -2,7 +2,7 @@ import { aggregate, browserCache, loadProfile, UserError } from "./github.js";
 import { assignSlots, attachHover, buildView, formatLines, legendEntries, monthLabel, OTHER, renderSvg, seriesColor, standalone } from "./chart.js";
 
 const $ = (id) => document.getElementById(id);
-const TOKEN_KEY = "commit-languages:token";
+const TOKEN_KEY = "codelangs:token";
 const cache = browserCache();
 
 const state = {
@@ -110,7 +110,7 @@ async function load(login, initial = {}) {
   $("profile-link").href = `https://github.com/${encodeURIComponent(login)}`;
   $("profile-meta").textContent = "";
   $("username").value = login;
-  document.title = `@${login} · What do you code in?`;
+  document.title = `@${login} · Code Langs`;
   setStatus(`Looking up @${login}…`, "loading");
 
   let profile;
@@ -137,7 +137,7 @@ async function load(login, initial = {}) {
   state.profile = profile;
   state.login = profile.user.login;
   showProfile(profile.user);
-  document.title = `@${profile.user.login} · What do you code in?`;
+  document.title = `@${profile.user.login} · Code Langs`;
   const data = aggregate(profile);
   state.data = data;
   state.slots = assignSlots(data.languages);
@@ -521,7 +521,7 @@ function fromUrl() {
     document.body.classList.remove("has-results");
     $("results").hidden = true;
     $("username").value = "";
-    document.title = "What do you code in?";
+    document.title = "Code Langs";
     return;
   }
   if (u.login.toLowerCase() === state.login.toLowerCase() && state.data) {

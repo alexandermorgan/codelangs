@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   // A Worker with static assets and no script: every request is answered from
   // ./public as-is. `npm run dev` serves it on http://localhost:8787.
-  "name": "commit-languages",
+  "name": "codelangs",
   "compatibility_date": "2026-11-01",
   "assets": {
     "directory": "./public",
