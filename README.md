@@ -108,7 +108,11 @@ what's missing.
 | Public data only | Public repositories | none |
 | Include private repos | All repositories (or selected) | Contents: read (Metadata: read is added automatically) |
 
-Contents covers listing commits and reading their diffs. Metadata covers
+Contents covers listing commits and reading their diffs. If a token can see
+a private repo but can't read its commits, the page names the repo and says
+the token needs Contents. Saving a token (including the same one after editing
+it on GitHub) clears the cached repo and commit lists, so changes take effect
+at once. Metadata covers
 listing repositories. No account permissions are needed. A fine-grained token
 has one resource owner (your account or one organization), so an
 organization's private repos need a token owned by that organization, and the

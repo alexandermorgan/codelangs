@@ -111,7 +111,11 @@ repos["acme/infra"].commits.push(repos["octo-dev/webapp"].commits[0]);
 
 export const FIXTURE = { repos };
 
-export function createFakeGitHub({ rateLimitAfter = Infinity } = {}) {
+/**
+ * `tokenAccess`: "full" (default), "no-contents" (the token lists private repos
+ * but can't read their commits), or "public-only" (it sees no private repos).
+ */
+export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "full" } = {}) {
   let calls = 0;
   const json = (body, status = 200, extra = {}) => ({
     status,
@@ -157,6 +161,7 @@ export function createFakeGitHub({ rateLimitAfter = Infinity } = {}) {
     }
     if (path === "/user/repos") {
       if (!authed) return json({ message: "Requires authentication" }, 401);
+      if (tokenAccess === "public-only") return json([]);
       return json(page === 1 ? Object.keys(repos).filter((full) => repos[full].private).map(repoJson) : []);
     }
     if (path === "/search/issues") {
@@ -173,6 +178,9 @@ export function createFakeGitHub({ rateLimitAfter = Infinity } = {}) {
       return json({ total_count: items.length, items }, 200, { "x-ratelimit-resource": "search" });
     }
     if ((m = path.match(/^\/repos\/([^/]+\/[^/]+)/)) && (!repos[m[1]] || (repos[m[1]].private && !authed))) return json({ message: "Not Found" }, 404);
+    if ((m = path.match(/^\/repos\/([^/]+\/[^/]+)\/commits/)) && repos[m[1]].private && tokenAccess === "no-contents") {
+      return json({ message: "Resource not accessible by personal access token" }, 403);
+    }
     if ((m = path.match(/^\/repos\/([^/]+\/[^/]+)\/commits$/))) {
       if (url.searchParams.get("author")?.toLowerCase() !== "octo-dev") return json([]);
       const per = Number(url.searchParams.get("per_page") || 30);

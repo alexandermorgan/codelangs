@@ -116,6 +116,39 @@ test("with a token, private repos the token can read are included", async () => 
   assert.ok(data.languages.some((l) => l.name === "Go"));
 });
 
+test("a token that can't read commits is reported, and not cached as empty", async () => {
+  const cache = memoryCache();
+  const token = "github_pat_test";
+  const first = await loadProfile("octo-dev", { token, fetchImpl: createFakeGitHub({ tokenAccess: "no-contents" }).fetchImpl, cache });
+  assert.deepEqual(first.denied, ["octo-dev/secret"]);
+  assert.equal(first.privateRepos, 1);
+  assert.equal(first.repos.find((r) => r.full === "octo-dev/secret"), undefined);
+  // The same token after its permissions are fixed on GitHub.
+  const second = await loadProfile("octo-dev", { token, fetchImpl: createFakeGitHub().fetchImpl, cache });
+  assert.deepEqual(second.denied, []);
+  assert.ok(second.repos.find((r) => r.full === "octo-dev/secret"));
+});
+
+test("a token that sees no private repos says so", async () => {
+  const profile = await loadProfile("octo-dev", { token: "github_pat_test", fetchImpl: createFakeGitHub({ tokenAccess: "public-only" }).fetchImpl, cache: memoryCache() });
+  assert.equal(profile.usedToken, true);
+  assert.equal(profile.privateRepos, 0);
+});
+
+test("clearing cached lists keeps diffs, so a token change re-discovers repos cheaply", async () => {
+  const cache = memoryCache();
+  const token = "github_pat_test";
+  await loadProfile("octo-dev", { token, fetchImpl: createFakeGitHub({ tokenAccess: "public-only" }).fetchImpl, cache });
+  cache.clearLists();
+  const gh = createFakeGitHub();
+  const after = await loadProfile("octo-dev", { token, fetchImpl: gh.fetchImpl, cache });
+  assert.equal(after.privateRepos, 1);
+  assert.ok(after.repos.find((r) => r.full === "octo-dev/secret"));
+  // Diffs read before were reused: only the private repo's commits (plus lists) were fetched.
+  const secretCommits = after.repos.find((r) => r.full === "octo-dev/secret").commits;
+  assert.ok(gh.calls() < secretCommits + 40, `${gh.calls()} calls`);
+});
+
 test("a rate limit returns an even sample, and the cache resumes from there", async () => {
   const cache = memoryCache();
   const first = await loadProfile("octo-dev", { fetchImpl: createFakeGitHub({ rateLimitAfter: 200 }).fetchImpl, cache });

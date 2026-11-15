@@ -125,6 +125,16 @@ function fingerprint(token) {
 export function browserCache(prefix = "codelangs") {
   const key = (k) => `${prefix}:v${CACHE_VERSION}:${k}`;
   return {
+    /** Drops cached repo and commit lists, keeping diffs (which never change). */
+    clearLists() {
+      try {
+        for (const name of Object.keys(localStorage)) {
+          if (name.startsWith(`${prefix}:v`) && !name.startsWith(key("diffs:"))) localStorage.removeItem(name);
+        }
+      } catch {
+        // storage unavailable: nothing cached
+      }
+    },
     get(k, ttl = LIST_TTL) {
       try {
         const raw = localStorage.getItem(key(k));
@@ -156,6 +166,9 @@ export function browserCache(prefix = "codelangs") {
 export function memoryCache() {
   const map = new Map();
   return {
+    clearLists() {
+      for (const k of [...map.keys()]) if (!k.startsWith("diffs:")) map.delete(k);
+    },
     get: (k) => map.get(k) ?? null,
     set: (k, v) => map.set(k, { ...v, at: Date.now() }),
   };
@@ -346,6 +359,7 @@ export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(gl
   }
   const { user, repos } = found;
   let rateLimited = null;
+  const denied = [];
 
   // Per repo: the user's commits ([sha, authored date]) and, as they load,
   // each commit's tally ({ sha: [month, { lang: [added, deleted] }, ignored] }).
@@ -378,6 +392,17 @@ export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(gl
       const commits = [];
       for (let page = 1; page <= MAX_COMMIT_PAGES; page++) {
         const res = await request(`/repos/${repo.full}/commits?author=${encodeURIComponent(user.login)}&per_page=100&page=${page}`);
+        // 403/404 on a repo we were told about: the token can see the repo
+        // but not read its commits (it lacks Contents: read). Report it, and
+        // don't cache it, so fixing the token's permissions takes effect.
+        if (page === 1 && (res.status === 403 || res.status === 404)) {
+          denied.push(repo.full);
+          state.get(repo.full).list = [];
+          listed++;
+          listProgress();
+          return;
+        }
+        // 409: an empty repository.
         const items = Array.isArray(res.data) ? res.data : [];
         for (const c of items) {
           if ((c.parents?.length ?? 0) > 1) continue; // merge commit
@@ -471,7 +496,8 @@ export async function loadProfile(login, { token = "", fetchImpl = fetch.bind(gl
     if (commits) out.push({ full: repo.full, source: repo.source, commits, loaded, adds, dels, months });
   }
   const listedRepos = repos.filter((repo) => state.get(repo.full).list).length;
-  return { user, repos: out, listedRepos, totalRepos: repos.length, totalCommits, loadedCommits, ignored, rateLimited, rate };
+  const privateRepos = repos.filter((repo) => repo.source === "private").length;
+  return { user, repos: out, listedRepos, totalRepos: repos.length, totalCommits, loadedCommits, ignored, rateLimited, rate, denied, privateRepos, usedToken: Boolean(token) };
 }
 
 // ---------- aggregation ----------

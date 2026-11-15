@@ -40,6 +40,9 @@ $("token-form").addEventListener("submit", (evt) => {
     // storage unavailable
   }
   $("token").value = "";
+  // Saving a token (even the same one, after editing its permissions on
+  // GitHub) can change which repos are visible, so cached lists are dropped.
+  cache.clearLists();
   showTokenState();
   if (state.login) load(state.login);
 });
@@ -49,7 +52,9 @@ $("token-forget").addEventListener("click", () => {
   } catch {
     // storage unavailable
   }
+  cache.clearLists();
   showTokenState();
+  if (state.login) load(state.login);
 });
 showTokenState();
 
@@ -199,6 +204,20 @@ function showNotes(profile) {
       setStatus([notes.join(" "), a, " to raise the limit."], "error");
       return;
     }
+  }
+  // Token problems that would otherwise leave private work out silently.
+  if (profile.denied?.length) {
+    const n = profile.denied.length;
+    notes.push(
+      `${n} ${n === 1 ? "repository" : "repositories"} (${profile.denied.slice(0, 3).join(", ")}${n > 3 ? ", …" : ""}) ` +
+        `couldn't be read: the token needs the Contents (read-only) permission. ` +
+        "Edit the token on GitHub, then click Save here again.",
+    );
+  } else if (profile.usedToken && profile.privateRepos === 0) {
+    notes.push(
+      "The token didn't find any private repositories, so only public ones are counted. " +
+        "If you have private ones, set the token's Repository access to “All repositories” and give it Contents (read-only), then click Save here again.",
+    );
   }
   setStatus(notes.join(" "), notes.length ? "error" : "");
 }
