@@ -90,10 +90,9 @@ function value(view, e, i, kind) {
   return view.totals[i] > 0 ? (raw / view.totals[i]) * 100 : 0;
 }
 
-export function seriesColor(view, e, kind) {
-  if (!view.split) return view.hasOther && e.slot === MAX_SLOTS - 1 ? "var(--c-other)" : `var(--c-${e.slot + 1})`;
-  const step = view.slotCount <= 1 ? 0 : Math.round((e.slot * (MAX_SLOTS - 1)) / (view.slotCount - 1));
-  return `var(--c-${kind === "dels" ? "del" : "add"}-${step + 1})`;
+/** A language's color: the same in every view, above and below zero alike. */
+export function seriesColor(view, e) {
+  return view.hasOther && e.slot === MAX_SLOTS - 1 ? "var(--c-other)" : `var(--c-${e.slot + 1})`;
 }
 
 const num = (v) => (Math.abs(v) < 0.005 ? "0" : v.toFixed(2).replace(/\.?0+$/, ""));
@@ -202,7 +201,7 @@ function adjust(svg, view, series, fontSize) {
       g.remove();
       return;
     }
-    const c = seriesColor(view, s.entity, s.kind);
+    const c = seriesColor(view, s.entity);
     g.setAttribute("fill", c);
     g.removeAttribute("data-id");
     g.dataset.name = s.entity.name;
@@ -267,35 +266,14 @@ function adjust(svg, view, series, fontSize) {
     }
   }
 
-  // Legend swatches follow the series colors; in the split view each shows
-  // the language's added (top) and deleted (bottom) shade.
+  // Legend swatches follow the series colors.
   const labelled = series.filter((s) => s.labelled);
   [...svg.querySelectorAll(".pele-legend-item")].forEach((item, i) => {
     const s = labelled[i];
     if (!s) return;
     item.removeAttribute("data-id");
     const swatch = item.querySelector("rect, path");
-    const isLine = swatch.tagName.toLowerCase() === "path";
-    const box = isLine ? swatch.getAttribute("d").match(/M([\d.]+),([\d.]+)/).slice(1).map(Number) : [Number(swatch.getAttribute("x")), Number(swatch.getAttribute("y"))];
-    if (!view.split) {
-      swatch.setAttribute(isLine ? "stroke" : "fill", seriesColor(view, s.entity, s.kind));
-      return;
-    }
-    const add = seriesColor(view, s.entity, "adds");
-    const del = seriesColor(view, s.entity, "dels");
-    if (isLine) {
-      const [x, y] = box;
-      swatch.replaceWith(
-        el("path", { d: `M${x},${y - 2.5}h12`, stroke: add, "stroke-width": 2, "stroke-linecap": "round" }),
-        el("path", { d: `M${x},${y + 2.5}h12`, stroke: del, "stroke-width": 2, "stroke-linecap": "round" }),
-      );
-    } else {
-      const [x, y] = box;
-      swatch.replaceWith(
-        el("rect", { x, y, width: 12, height: 6, rx: 1.5, fill: add }),
-        el("rect", { x, y: y + 6, width: 12, height: 6, rx: 1.5, fill: del }),
-      );
-    }
+    swatch.setAttribute(swatch.tagName.toLowerCase() === "path" ? "stroke" : "fill", seriesColor(view, s.entity));
   });
 
   // Y-axis labels: compact numbers, percent signs, and no minus signs below
@@ -385,8 +363,7 @@ export function legendEntries(view) {
   const entries = view.entities.map((e) => ({
     name: e.name,
     members: e.members,
-    color: seriesColor(view, e, view.split ? "adds" : "total"),
-    del: view.split ? seriesColor(view, e, "dels") : null,
+    color: seriesColor(view, e),
   }));
   // Stacked charts list the top of the stack first, like the stack itself.
   return view.mode === "percent" ? entries.reverse() : entries;
@@ -395,7 +372,7 @@ export function legendEntries(view) {
 /** What the tooltip shows for month i. */
 export function monthDetails(view, i) {
   const rows = view.entities
-    .map((e) => ({ name: e.name, members: e.members, adds: e.adds[i], dels: e.dels[i], total: e.adds[i] + e.dels[i], color: seriesColor(view, e, view.split ? "adds" : "total"), del: view.split ? seriesColor(view, e, "dels") : null }))
+    .map((e) => ({ name: e.name, members: e.members, adds: e.adds[i], dels: e.dels[i], total: e.adds[i] + e.dels[i], color: seriesColor(view, e) }))
     .filter((r) => r.total >= 0.5)
     .sort((a, b) => b.total - a.total);
   return { month: view.months[i], total: view.totals[i], adds: view.addTotals[i], dels: view.delTotals[i], rows };
@@ -459,7 +436,7 @@ function tooltipContent(view, i) {
     const li = document.createElement("li");
     const sw = document.createElement("span");
     sw.className = "tip-swatch";
-    sw.style.background = r.del ? `linear-gradient(${r.color} 50%, ${r.del} 50%)` : r.color;
+    sw.style.background = r.color;
     const name = document.createElement("span");
     name.className = "tip-name";
     name.textContent = r.name;

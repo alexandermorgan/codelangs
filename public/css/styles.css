@@ -45,25 +45,6 @@
   --c-6: #008300;
   --c-7: #6250d6;
   --c-other: #898781;
-
-  /* Added / deleted view: one green and one red ordinal ramp, strongest first.
-     Each validated (monotone lightness, gaps >= 0.06, light end >= 2:1). */
-  --c-add-1: #003910;
-  --c-add-2: #064c1c;
-  --c-add-3: #135f28;
-  --c-add-4: #207435;
-  --c-add-5: #2d8842;
-  --c-add-6: #399e50;
-  --c-add-7: #46b45e;
-  --c-add-8: #53ca6d;
-  --c-del-1: #620a0b;
-  --c-del-2: #77211d;
-  --c-del-3: #8b342e;
-  --c-del-4: #a04740;
-  --c-del-5: #b65a52;
-  --c-del-6: #cb6e64;
-  --c-del-7: #e18177;
-  --c-del-8: #f7958a;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -95,22 +76,6 @@
     --c-6: #0ca30c;
     --c-7: #9085e9;
     --c-other: #898781;
-    --c-add-1: #bafbc2;
-    --c-add-2: #a3e6ac;
-    --c-add-3: #8bd295;
-    --c-add-4: #74be7f;
-    --c-add-5: #5cab6a;
-    --c-add-6: #449754;
-    --c-add-7: #29843f;
-    --c-add-8: #00722a;
-    --c-del-1: #fed7d1;
-    --c-del-2: #f3bdb6;
-    --c-del-3: #e7a49c;
-    --c-del-4: #db8b82;
-    --c-del-5: #cd7269;
-    --c-del-6: #c05950;
-    --c-del-7: #b13d36;
-    --c-del-8: #a21a1b;
   }
 }
 
@@ -143,22 +108,6 @@
   --c-6: #0ca30c;
   --c-7: #9085e9;
   --c-other: #898781;
-  --c-add-1: #bafbc2;
-  --c-add-2: #a3e6ac;
-  --c-add-3: #8bd295;
-  --c-add-4: #74be7f;
-  --c-add-5: #5cab6a;
-  --c-add-6: #449754;
-  --c-add-7: #29843f;
-  --c-add-8: #00722a;
-  --c-del-1: #fed7d1;
-  --c-del-2: #f3bdb6;
-  --c-del-3: #e7a49c;
-  --c-del-4: #db8b82;
-  --c-del-5: #cd7269;
-  --c-del-6: #c05950;
-  --c-del-7: #b13d36;
-  --c-del-8: #a21a1b;
 }
 
 /* ---------- base ---------- */

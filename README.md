@@ -27,8 +27,8 @@ Then open http://localhost:8787 (or http://localhost:8787/?u=some-username).
   changed per language into one continuous band per language. Lines draws one
   overlapping line per language.
 - **Combined / Added / deleted.** Combined counts additions plus deletions.
-  Added / deleted draws additions above zero in greens and deletions below
-  zero in reds, one shade per language.
+  Added / deleted draws additions above zero and deletions below it, each
+  language in the same color as in the other views.
 - **Time span.** A two-thumb slider, in whole months, from the account's
   creation (or its first commit, if earlier) to the current month. The thumbs
   can meet but not cross.

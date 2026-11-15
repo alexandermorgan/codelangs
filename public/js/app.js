@@ -257,7 +257,7 @@ function renderLegend(view) {
       const li = document.createElement("li");
       const sw = document.createElement("span");
       sw.className = "swatch";
-      sw.style.background = entry.del ? `linear-gradient(${entry.color} 50%, ${entry.del} 50%)` : entry.color;
+      sw.style.background = entry.color;
       li.append(sw, entry.name);
       if (entry.name === OTHER) li.title = entry.members.join(", ");
       return li;
@@ -381,9 +381,7 @@ function renderSummary(view) {
       const name = document.createElement("td");
       const sw = document.createElement("span");
       sw.className = "swatch";
-      sw.style.background = view.split
-        ? `linear-gradient(${seriesColor(view, e, "adds")} 50%, ${seriesColor(view, e, "dels")} 50%)`
-        : seriesColor(view, e, "total");
+      sw.style.background = seriesColor(view, e);
       name.append(sw, e.name === OTHER ? `Other (${e.members.length} languages)` : e.name);
       if (e.name === OTHER) name.title = e.members.join(", ");
       const adds = e.adds.reduce((s, v) => s + v, 0);
