@@ -668,8 +668,16 @@ export async function loadProfile(
       onProgress({ phase: "diffs", done, total, message: `Reading commits: ${done.toLocaleString()} of ${total.toLocaleString()}` });
     diffProgress();
     let sinceSave = 0;
-    if (onSnapshot && done > 0) onSnapshot(snapshot());
-    timer = onSnapshot ? setInterval(() => onSnapshot(snapshot()), snapshotEvery) : null;
+    // A failure while showing a snapshot must not stop the load itself.
+    const emit = () => {
+      try {
+        onSnapshot(snapshot());
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    if (onSnapshot && done > 0) emit();
+    timer = onSnapshot ? setInterval(emit, snapshotEvery) : null;
     await pool(shuffled(todo, (t) => t.sha), token ? CONCURRENCY : 4, async ({ repo, sha, date }) => {
       const files = [];
       for (let page = 1; page <= MAX_FILE_PAGES; page++) {

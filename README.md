@@ -38,7 +38,9 @@ bunx serve public
 
 - **Percent / Lines.** Percent (the default) stacks each month's share of lines
   changed per language into one continuous band per language. Lines draws one
-  overlapping line per language.
+  overlapping line per language. Both are smooth curves through the middle of
+  each month, of a kind that never overshoots: lines never dip below zero or
+  bulge past their peaks, and bands never cross or poke past 100%.
 - **Combined / Added / deleted.** Combined counts additions plus deletions.
   Added / deleted draws additions above zero and deletions below it, each
   language in the same color as in the other views.

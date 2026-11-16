@@ -228,6 +228,25 @@ test("snapshots arrive while loading, growing, and the last matches the result",
   assert.ok(snaps[0] < profile.loadedCommits);
 });
 
+test("a failure while showing a snapshot doesn't stop the load", async () => {
+  const original = console.error;
+  console.error = () => {};
+  try {
+    const profile = await loadProfile("octo-dev", {
+      requestsPerSecond: 2000,
+      snapshotEvery: 50,
+      fetchImpl: createFakeGitHub().fetchImpl,
+      cache: memoryCache(),
+      onSnapshot: () => {
+        throw new Error("drawing failed");
+      },
+    });
+    assert.equal(profile.loadedCommits, profile.totalCommits);
+  } finally {
+    console.error = original;
+  }
+});
+
 test("each language knows how many commits touched it", async () => {
   const profile = await loadProfile("octo-dev", { requestsPerSecond: Infinity, fetchImpl: createFakeGitHub().fetchImpl, cache: memoryCache() });
   const data = aggregate(profile);

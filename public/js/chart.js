@@ -169,6 +169,69 @@ function source(view, title) {
   return { text: lines.join("\n"), series };
 }
 
+// ---------- curves ----------
+
+/**
+ * Tangents for a curve through (xs, ys) that never overshoots: between two
+ * points it stays between their values, and it is flat at every peak, trough
+ * and plateau (Steffen's method).
+ */
+function tangents(xs, ys) {
+  const n = xs.length;
+  const m = new Array(n).fill(0);
+  if (n < 2) return m;
+  const slope = (i) => (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i] || 1);
+  for (let i = 1; i < n - 1; i++) {
+    const s0 = slope(i - 1);
+    const s1 = slope(i);
+    const h0 = xs[i] - xs[i - 1];
+    const h1 = xs[i + 1] - xs[i];
+    const p = (s0 * h1 + s1 * h0) / (h0 + h1 || 1);
+    m[i] = (Math.sign(s0) + Math.sign(s1)) * Math.min(Math.abs(s0), Math.abs(s1), 0.5 * Math.abs(p)) || 0;
+  }
+  const end = (i, j, k) => {
+    const s = slope(Math.min(i, j));
+    const t = (3 * s - m[k]) / 2;
+    return Math.sign(t) !== Math.sign(s) ? 0 : Math.abs(t) > 3 * Math.abs(s) ? 3 * s : t;
+  };
+  m[0] = n > 2 ? end(0, 1, 1) : slope(0);
+  m[n - 1] = n > 2 ? end(n - 2, n - 1, n - 2) : slope(0);
+  return m;
+}
+
+/** The smoothed curve through (xs, ys) as a function of x. */
+function sampler(xs, ys) {
+  const m = tangents(xs, ys);
+  return (x) => {
+    let i = 0;
+    while (i < xs.length - 2 && x > xs[i + 1]) i++;
+    const h = xs[i + 1] - xs[i] || 1;
+    const t = Math.min(1, Math.max(0, (x - xs[i]) / h));
+    const t2 = t * t;
+    const t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h * m[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h * m[i + 1];
+  };
+}
+
+/** Rewrites an SVG polyline path ("M x,y L x,y …", possibly several) as smooth curves. */
+function smoothPolylines(d) {
+  return (d.match(/M[^M]*/g) ?? [])
+    .map((sub) => {
+      const pts = [...sub.matchAll(/(-?[\d.]+),(-?[\d.]+)/g)].map((p) => [Number(p[1]), Number(p[2])]);
+      if (pts.length < 3) return sub;
+      const xs = pts.map((p) => p[0]);
+      const ys = pts.map((p) => p[1]);
+      const m = tangents(xs, ys);
+      let out = `M${xs[0]},${ys[0]}`;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const h = (xs[i + 1] - xs[i]) / 3;
+        out += `C${(xs[i] + h).toFixed(2)},${(ys[i] + h * m[i]).toFixed(2)} ${(xs[i + 1] - h).toFixed(2)},${(ys[i + 1] - h * m[i + 1]).toFixed(2)} ${xs[i + 1]},${ys[i + 1]}`;
+      }
+      return out;
+    })
+    .join("");
+}
+
 function el(name, attrs = {}, text) {
   const node = document.createElementNS(SVG_NS, name);
   for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
@@ -236,45 +299,74 @@ function adjust(svg, view, series, fontSize, focus) {
   if (focus) for (const g of groups) if (g.isConnected && g.dataset.name === focus && g.classList.contains("pele-line")) g.parentNode.append(g);
 
   if (drawOrder.length) {
-    // Each stack is declared from zero outwards.
+    // Stacked bands, smoothed. pele drew one bar per month from zero to each
+    // language's running total; those bar ends give each language's
+    // thickness at the middle of each month. Each thickness is smoothed with
+    // a curve that never overshoots (so a band never goes negative), then all
+    // of them are scaled to the smoothed total, so bands never cross and the
+    // stack still ends exactly at the total (100% in the percent view).
     const byKind = new Map();
     for (const item of drawOrder) {
       if (!byKind.has(item.s.kind)) byKind.set(item.s.kind, []);
       byKind.get(item.s.kind).push(item);
     }
+    const knots = [left, ...Array.from({ length: n }, (_, i) => left + (i + 0.5) * band), right];
+    const step = 2.5;
+    const samples = Math.max(2, Math.ceil((right - left) / step) + 1);
+    const xs = Array.from({ length: samples }, (_, j) => left + ((right - left) * j) / (samples - 1));
+    const separators = [];
     for (const [kind, items] of byKind) {
       const up = kind !== "dels";
-      const prev = new Float64Array(n).fill(NaN);
-      for (const { g } of items) {
-        // pele drew one bar per month from zero to the running total; keep
-        // only the part above the language below, as one stepped shape
-        // spanning whole months, so there are no seams between months.
-        const tops = new Float64Array(n);
-        const bottoms = new Float64Array(n);
+      let zero = null;
+      const prev = new Float64Array(n);
+      const thickness = items.map(({ g }) => {
+        const t = new Float64Array(n);
         [...g.querySelectorAll("rect")].forEach((r, i) => {
           const y = Number(r.getAttribute("y"));
           const h = Number(r.getAttribute("height"));
-          const zero = up ? y + h : y;
-          const far = up ? y : y + h;
-          const near = Number.isNaN(prev[i]) ? zero : prev[i];
-          prev[i] = far;
-          let a = Math.min(near, far);
-          let b = Math.max(near, far);
-          // A hairline of surface between stacked languages, at the far end.
-          if (b - a > 2) {
-            if (up) a += 1;
-            else b -= 1;
-          }
-          tops[i] = a;
-          bottoms[i] = Math.max(a, b);
+          zero ??= up ? y + h : y;
+          const reach = h; // distance from zero to this language's running total
+          t[i] = Math.max(0, reach - prev[i]);
+          prev[i] = Math.max(prev[i], reach);
         });
-        const x = (i) => (left + i * band).toFixed(2);
-        let d = "";
-        for (let i = 0; i < n; i++) d += `${i ? "L" : "M"}${x(i)},${tops[i].toFixed(2)}L${x(i + 1)},${tops[i].toFixed(2)}`;
-        for (let i = n - 1; i >= 0; i--) d += `L${x(i + 1)},${bottoms[i].toFixed(2)}L${x(i)},${bottoms[i].toFixed(2)}`;
-        g.replaceChildren(el("path", { d: `${d}Z` }));
-      }
+        return t;
+      });
+      if (zero === null) continue;
+      const pad = (a) => [a[0], ...a, a[n - 1]];
+      const total = sampler(knots, pad(prev));
+      const parts = thickness.map((t) => sampler(knots, pad(t)));
+      // Boundaries at each sample: 0 = zero line, k+1 = outer edge of language k.
+      const edges = Array.from({ length: items.length + 1 }, () => new Float64Array(xs.length));
+      xs.forEach((x, j) => {
+        const ts = parts.map((f) => Math.max(0, f(x)));
+        const sum = ts.reduce((a, b) => a + b, 0);
+        const scale = sum > 0 ? Math.max(0, total(x)) / sum : 0;
+        let reach = 0;
+        edges[0][j] = zero;
+        ts.forEach((t, k) => {
+          reach += t * scale;
+          edges[k + 1][j] = up ? zero - reach : zero + reach;
+        });
+      });
+      const line = (e, reverse = false) => {
+        const idx = reverse ? [...xs.keys()].reverse() : [...xs.keys()];
+        return idx.map((j, at) => `${at ? "L" : "M"}${xs[j].toFixed(1)},${e[j].toFixed(1)}`).join("");
+      };
+      items.forEach(({ g }, k) => {
+        g.replaceChildren(el("path", { d: `${line(edges[k + 1])}${line(edges[k], true).replace(/^M/, "L")}Z` }));
+      });
+      // A hairline of surface between neighbouring languages.
+      for (let k = 1; k < items.length; k++) separators.push(line(edges[k]));
     }
+    if (separators.length) {
+      svg.querySelector(".pele-plot").append(el("path", { class: "band-separators", d: separators.join(""), fill: "none", stroke: "var(--_bg)", "stroke-width": 1 }));
+    }
+  }
+
+  // Lines, smoothed the same way: a curve through each month that never
+  // overshoots, so a line never dips below zero or bulges past its peaks.
+  for (const path of svg.querySelectorAll(".pele-plot > .pele-line > path")) {
+    path.setAttribute("d", smoothPolylines(path.getAttribute("d")));
   }
 
   // Split view: the zero line between additions and deletions.

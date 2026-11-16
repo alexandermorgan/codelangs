@@ -175,7 +175,13 @@ async function load(login, initial = {}) {
   if (!current()) return;
   state.loading = false;
   state.deferred = null;
-  show(profile);
+  try {
+    show(profile);
+  } catch (err) {
+    console.error(err);
+    setStatus(`The data loaded, but drawing the charts failed (${err.message}).`, "error");
+    return;
+  }
   showNotes(profile);
   if (!state.data.languages.length && !profile.rateLimited) {
     setStatus(
