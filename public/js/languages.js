@@ -7,7 +7,9 @@
 const EXTENSIONS = {
   // Python
   py: "Python", pyi: "Python", pyw: "Python", pyx: "Cython", pxd: "Cython",
-  ipynb: "Jupyter Notebook",
+  // Notebooks count as the language of their kernel: Python unless the diff
+  // shows another (see notebookLanguage).
+  ipynb: "Python",
   // JavaScript, TypeScript and JS framework components, counted together.
   js: "JS/TS", mjs: "JS/TS", cjs: "JS/TS", jsx: "JS/TS",
   ts: "JS/TS", mts: "JS/TS", cts: "JS/TS", tsx: "JS/TS",
@@ -59,22 +61,30 @@ const EXTENSIONS = {
   qml: "QML", ly: "LilyPond",
 };
 
+// Build, container and CI files are used with every language, so they are one
+// category of their own rather than any one language.
+export const BUILD = "Build & CI";
+
 const FILENAMES = {
-  makefile: "Makefile", gnumakefile: "Makefile",
-  dockerfile: "Dockerfile", containerfile: "Dockerfile",
-  "cmakelists.txt": "CMake",
+  makefile: BUILD, gnumakefile: BUILD,
+  dockerfile: BUILD, containerfile: BUILD,
+  "cmakelists.txt": BUILD,
+  justfile: BUILD, jenkinsfile: BUILD, earthfile: BUILD, procfile: BUILD,
+  "build.bazel": BUILD, build: BUILD, workspace: BUILD, "workspace.bazel": BUILD, "module.bazel": BUILD,
   rakefile: "Ruby", gemfile: "Ruby", podfile: "Ruby", vagrantfile: "Ruby", brewfile: "Ruby",
-  justfile: "Just",
-  "build.bazel": "Starlark", build: "Starlark", workspace: "Starlark",
 };
 
-// Extensions handled by more specific rules elsewhere.
+// Paths handled before the extension table.
 const EXTENSION_RULES = [
-  [/\.cmake$/i, "CMake"],
-  [/\.mk$/i, "Makefile"],
-  [/\.dockerfile$/i, "Dockerfile"],
-  [/(^|\/)dockerfile\.[^/]+$/i, "Dockerfile"],
-  [/\.(bzl|star)$/i, "Starlark"],
+  [/\.(cmake|mk|bzl|star|dockerfile)$/i, BUILD],
+  [/(^|\/)(docker|container)file\.[^/]+$/i, BUILD],
+  // YAML is usually configuration or data and isn't counted, except in the
+  // files that define builds and CI.
+  [/(^|\/)\.github\/(workflows|actions)\/.+\.ya?ml$/i, BUILD],
+  [/(^|\/)\.(gitlab-ci|travis|drone|woodpecker)\.ya?ml$/i, BUILD],
+  [/(^|\/)\.(circleci|buildkite|woodpecker|tekton)\/.+\.ya?ml$/i, BUILD],
+  [/(^|\/)(azure-pipelines|bitbucket-pipelines|appveyor|cloudbuild|codemagic|buildspec|taskfile)\.ya?ml$/i, BUILD],
+  [/(^|\/)(docker-)?compose(\.[^/]*)?\.ya?ml$/i, BUILD],
 ];
 
 // Generated or vendored code, which the person didn't write line by line.
@@ -112,6 +122,26 @@ export function languageOf(path) {
   const dot = lower.lastIndexOf(".");
   if (dot <= 0) return null;
   return own(EXTENSIONS, lower.slice(dot + 1));
+}
+
+/** A Jupyter notebook, whose language is its kernel's. */
+export function isNotebook(path) {
+  return /\.ipynb$/i.test(path ?? "");
+}
+
+const KERNELS = {
+  python: "Python", r: "R", julia: "Julia", scala: "Scala", javascript: "JS/TS", typescript: "JS/TS",
+  "c++": "C++", cpp: "C++", c: "C", go: "Go", rust: "Rust", ruby: "Ruby", java: "Java", kotlin: "Kotlin",
+  "c#": "C#", "f#": "F#", haskell: "Haskell", sql: "SQL", bash: "Shell", sh: "Shell", matlab: "MATLAB", octave: "MATLAB", sas: "SAS",
+};
+
+/**
+ * A notebook's language: Python, unless its diff shows the notebook's kernel
+ * language (`"language": "R"` in its metadata) as another.
+ */
+export function notebookLanguage(patch) {
+  const named = (patch ?? "").match(/"language"\s*:\s*"([^"]+)"/)?.[1]?.toLowerCase();
+  return (named && own(KERNELS, named)) || "Python";
 }
 
 /** A C-family header whose language depends on the code around it. */

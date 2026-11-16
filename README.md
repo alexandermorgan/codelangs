@@ -84,8 +84,12 @@ All requests go from the visitor's browser to the GitHub REST API:
    (`public/js/languages.js`: `.py` is Python, `.ts`, `.js`, `.svelte`
    and `.vue` are all JS/TS, `.css`, `.scss`, `.sass`, `.less`, `.styl`
    and `.pcss` are all CSS,
-   `Makefile` is Makefile, and so on). These files are not counted:
-   - data and config formats (JSON, YAML, TOML, XML)
+   and so on). Jupyter notebooks count as Python unless their diff shows
+   another kernel language (R, Julia, …). Makefiles, Dockerfiles, CMake,
+   Bazel, justfiles, Jenkinsfiles and the YAML that defines CI and builds
+   (GitHub Actions workflows, GitLab CI, CircleCI, Docker Compose, …) count
+   together as "Build & CI". These files are not counted:
+   - data and config formats (JSON, other YAML, TOML, XML)
    - prose (Markdown, text)
    - lockfiles
    - binaries

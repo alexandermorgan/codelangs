@@ -22,11 +22,18 @@ test("files map to languages by extension or name", () => {
     "src/lib.c": "C",
     "src/main.rs": "Rust",
     "cmd/server.go": "Go",
-    "Makefile": "Makefile",
+    "Makefile": "Build & CI",
     "build/Dockerfile.dev": null, // under build/: generated output
-    "docker/Dockerfile": "Dockerfile",
-    "CMakeLists.txt": "CMake",
-    "notebooks/a.ipynb": "Jupyter Notebook",
+    "docker/Dockerfile": "Build & CI",
+    "docker/Dockerfile.prod": "Build & CI",
+    "CMakeLists.txt": "Build & CI",
+    "cmake/deps.cmake": "Build & CI",
+    "tools/defs.bzl": "Build & CI",
+    ".github/workflows/ci.yml": "Build & CI",
+    ".gitlab-ci.yml": "Build & CI",
+    ".circleci/config.yml": "Build & CI",
+    "docker-compose.dev.yaml": "Build & CI",
+    "notebooks/a.ipynb": "Python",
     "styles/site.scss": "CSS",
     "styles/theme.sass": "CSS",
     "styles/vars.less": "CSS",
@@ -42,6 +49,8 @@ test("data, prose, lockfiles and vendored or generated files are not counted", (
   for (const path of [
     "package.json",
     "config.yaml",
+    "locales/en.yml",
+    "openapi.yaml",
     "README.md",
     "notes.txt",
     "package-lock.json",
@@ -76,6 +85,17 @@ test(".h headers follow the rest of their commit", () => {
   assert.deepEqual(cOnly.langs, { C: [2, 0] });
   // GraphQL file lists say `path`, not `filename`.
   assert.deepEqual(tallyFiles([{ path: "x.py", additions: 1, deletions: 0 }]).langs, { Python: [1, 0] });
+});
+
+test("notebooks count as their kernel's language: Python unless the diff says otherwise", () => {
+  const py = tallyFiles([{ filename: "a.ipynb", additions: 10, deletions: 0, patch: '+   "source": ["print(1)"]' }]);
+  assert.deepEqual(py.langs, { Python: [10, 0] });
+  const r = tallyFiles([{ filename: "b.ipynb", additions: 4, deletions: 0, patch: '+  "language_info": {\n+   "name": "R",\n+   "language": "R"' }]);
+  assert.deepEqual(r.langs, { R: [4, 0] });
+  const julia = tallyFiles([{ filename: "c.ipynb", additions: 2, deletions: 0, patch: '+   "language": "julia",' }]);
+  assert.deepEqual(julia.langs, { Julia: [2, 0] });
+  // GraphQL file lists have no patch: Python.
+  assert.deepEqual(tallyFiles([{ path: "d.ipynb", additions: 1, deletions: 0 }]).langs, { Python: [1, 0] });
 });
 
 test("tallyFiles adds up lines per language and reports what it skipped", () => {
