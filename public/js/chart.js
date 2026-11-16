@@ -680,11 +680,28 @@ export function pieEntries(data, slots, commitLangs = []) {
   return entries.filter((e) => e.total > 0).sort((a, b) => a.slot - b.slot);
 }
 
+// pele leaves out pie slices under 1% (they stay in its legend), so smaller
+// ones are drawn a little over 1%. Their real share is in the hover.
+const MIN_SLICE = 0.0135;
+
+/**
+ * The sizes the pie is drawn with: each language's lines changed, except that
+ * a slice under 1% is drawn at a minimum size so it shows. Returns the values
+ * and the names of the enlarged slices.
+ */
+export function pieValues(entries) {
+  const total = entries.reduce((s, e) => s + e.total, 0);
+  const floor = total * MIN_SLICE;
+  const enlarged = entries.filter((e) => e.total < floor).map((e) => e.name);
+  return { values: entries.map((e) => Math.max(1, Math.round(Math.max(e.total, floor)))), enlarged };
+}
+
 /** Renders the all-time pie. Slices carry only their language; hover shows the rest. */
 export function renderPie(entries, { fontFamily, fontSize = 15, title, focus = null, hasOther = false, maxWidth } = {}) {
   const lines = ["pie"];
   if (title) lines.push(`  title ${quote(title)}`);
-  for (const e of entries) lines.push(`  ${quote(e.name)} : ${Math.max(1, Math.round(e.total))}`);
+  const { values, enlarged } = pieValues(entries);
+  entries.forEach((e, i) => lines.push(`  ${quote(e.name)} : ${values[i]}`));
   const { svg: markup } = render(lines.join("\n"), { fontFamily, fontSize, maxWidth });
   const tpl = document.createElement("template");
   tpl.innerHTML = markup;
@@ -707,6 +724,7 @@ export function renderPie(entries, { fontFamily, fontSize = 15, title, focus = n
     item.removeAttribute("data-id");
   }
   for (const slice of svg.querySelectorAll(".pele-slice")) slice.removeAttribute("data-id");
+  svg.dataset.enlarged = enlarged.join("\n");
   return svg;
 }
 

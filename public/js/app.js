@@ -389,6 +389,11 @@ function drawPie() {
   svg.setAttribute("aria-label", `${pieTitle()}. ${entries.map((e) => `${e.name} ${Math.round(e.share)}%`).join(", ")}.`);
   $("pie").replaceChildren(svg);
   attachPieHover(svg, entries, $("pie-tooltip"), $("pie-figure"));
+  const enlarged = svg.dataset.enlarged ? svg.dataset.enlarged.split("\n") : [];
+  delete svg.dataset.enlarged;
+  $("pie-note").textContent = enlarged.length
+    ? `${enlarged.join(", ")} ${enlarged.length === 1 ? "is" : "are"} under 1% of all lines changed, so ${enlarged.length === 1 ? "its slice is" : "their slices are"} drawn at about 1% to be visible. Hover for the real share.`
+    : "";
 }
 
 // Clicking a language in either legend shows only that language, in both
@@ -604,6 +609,7 @@ function exportSvg(which) {
   const holder = Object.assign(document.createElement("div"), { className: "export-holder" });
   holder.append(svg);
   $("figure").append(holder);
+  delete svg.dataset.enlarged;
   const text = standalone(svg, $("figure"));
   holder.remove();
   return text;

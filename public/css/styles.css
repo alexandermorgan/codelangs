@@ -947,6 +947,13 @@ svg .legend-toggle:focus-visible text {
 .pie-card {
   padding: 1rem;
 }
+.pie-note {
+  margin: 0;
+  font-size: 0.875rem;
+}
+.pie-note:empty {
+  display: none;
+}
 .pie svg {
   display: block;
   margin: 0 auto;
