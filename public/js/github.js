@@ -21,8 +21,8 @@ const API = "https://api.github.com";
 const LIST_TTL = 12 * 3600 * 1000;
 const DIFF_TTL = 30 * 24 * 3600 * 1000;
 // Bumped whenever cached data changes meaning (v3: JS/TS merged; v4: headers
-// follow their commit, and commit lists note squash-merged PRs).
-const CACHE_VERSION = 4;
+// follow their commit, and commit lists note squash-merged PRs; v5: CSS merged).
+const CACHE_VERSION = 5;
 const MAX_COMMIT_PAGES = 50; // 5,000 commits per repository
 const MAX_FILE_PAGES = 10; // GitHub lists at most 3,000 files per commit
 

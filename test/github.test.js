@@ -27,7 +27,11 @@ test("files map to languages by extension or name", () => {
     "docker/Dockerfile": "Dockerfile",
     "CMakeLists.txt": "CMake",
     "notebooks/a.ipynb": "Jupyter Notebook",
-    "styles/site.scss": "SCSS",
+    "styles/site.scss": "CSS",
+    "styles/theme.sass": "CSS",
+    "styles/vars.less": "CSS",
+    "styles/app.styl": "CSS",
+    "styles/main.pcss": "CSS",
     "infra/main.tf": "HCL",
     "Gemfile": "Ruby",
   };

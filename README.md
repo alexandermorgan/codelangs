@@ -82,7 +82,8 @@ All requests go from the visitor's browser to the GitHub REST API:
    with its additions and deletions, following pagination for big commits.
    Each file goes to a language by its extension or filename
    (`public/js/languages.js`: `.py` is Python, `.ts`, `.js`, `.svelte`
-   and `.vue` are all JS/TS,
+   and `.vue` are all JS/TS, `.css`, `.scss`, `.sass`, `.less`, `.styl`
+   and `.pcss` are all CSS,
    `Makefile` is Makefile, and so on). These files are not counted:
    - data and config formats (JSON, YAML, TOML, XML)
    - prose (Markdown, text)

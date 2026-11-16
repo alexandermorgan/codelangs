@@ -14,7 +14,8 @@ const EXTENSIONS = {
   vue: "JS/TS", svelte: "JS/TS", astro: "JS/TS", marko: "JS/TS", riot: "JS/TS",
   // Web
   html: "HTML", htm: "HTML", xhtml: "HTML",
-  css: "CSS", scss: "SCSS", sass: "Sass", less: "Less", styl: "Stylus",
+  // CSS and the languages that compile to it, counted together.
+  css: "CSS", scss: "CSS", sass: "CSS", less: "CSS", styl: "CSS", stylus: "CSS", pcss: "CSS", postcss: "CSS", sss: "CSS",
   // JVM
   java: "Java", kt: "Kotlin", kts: "Kotlin", scala: "Scala", sc: "Scala", groovy: "Groovy", gradle: "Groovy", clj: "Clojure", cljs: "Clojure", cljc: "Clojure", edn: "Clojure",
   // C family
