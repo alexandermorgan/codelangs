@@ -74,6 +74,9 @@ export function monthRange(start, end) {
 const REQUESTS_PER_SECOND = 14;
 const BURST = 30;
 export const CONCURRENCY = 16;
+// However the work is split up, never more than this many requests in flight
+// (GitHub allows 100).
+const MAX_IN_FLIGHT = 32;
 
 /** A token bucket: `take()` resolves when a request may start. */
 export function createPacer(perSecond, burst) {
@@ -120,11 +123,23 @@ function sleep(ms, signal) {
 export function createClient({ token, fetchImpl = fetch.bind(globalThis), signal, onSlowDown = () => {}, minBackoff = 60000, requestsPerSecond = REQUESTS_PER_SECOND }) {
   const rate = {};
   const pacer = createPacer(requestsPerSecond, BURST);
+  let inFlight = 0;
+  const waiting = [];
+  const send = async (url, init) => {
+    while (inFlight >= MAX_IN_FLIGHT) await new Promise((resolve) => waiting.push(resolve));
+    inFlight++;
+    try {
+      return await fetchImpl(url, init);
+    } finally {
+      inFlight--;
+      waiting.shift()?.();
+    }
+  };
   async function request(path, attempt = 0) {
     await pacer.take(signal);
     const headers = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
     if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetchImpl(API + path, { headers, signal });
+    const res = await send(API + path, { headers, signal });
     const resource = res.headers.get("x-ratelimit-resource") || (path.startsWith("/search/") ? "search" : "core");
     const remaining = res.headers.get("x-ratelimit-remaining");
     const reset = Number(res.headers.get("x-ratelimit-reset")) * 1000 || Date.now() + 60000;
@@ -158,7 +173,7 @@ export function createClient({ token, fetchImpl = fetch.bind(globalThis), signal
   /** A GraphQL query (needs a token). Resolves with `data`; throws if GitHub refuses it. */
   async function graphql(query, variables, attempt = 0) {
     await pacer.take(signal);
-    const res = await fetchImpl(`${API}/graphql`, {
+    const res = await send(`${API}/graphql`, {
       method: "POST",
       headers: { Accept: "application/vnd.github+json", "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ query, variables }),
@@ -583,36 +598,58 @@ export async function loadProfile(
     // 1. The user's commits on each repo's default branch.
     const toList = repos.filter((repo) => !state.get(repo.full).list);
     let listed = repos.length - toList.length;
-    const listProgress = () =>
-      onProgress({ phase: "list", done: listed, total: repos.length, message: `Finding commits: ${listed} of ${repos.length} repositories` });
+    // Each repo's first page says how many pages there are (the Link
+    // header's rel="last"), and the rest are fetched in parallel, so a repo
+    // with thousands of the user's commits doesn't hold everything up.
+    const found = new Map(); // repo still being listed -> commits found so far
+    const listProgress = () => {
+      const still = [...found.entries()];
+      const detail =
+        still.length && still.length <= 3
+          ? ` · still listing ${still.map(([full, n]) => `${full} (${n.toLocaleString()} commits so far)`).join(", ")}`
+          : "";
+      onProgress({ phase: "list", done: listed, total: repos.length, message: `Finding commits: ${listed} of ${repos.length} repositories${detail}` });
+    };
     listProgress();
     await pool(toList, token ? CONCURRENCY : 4, async (repo) => {
+      const url = (page) => `/repos/${repo.full}/commits?author=${encodeURIComponent(user.login)}&per_page=100&page=${page}`;
+      found.set(repo.full, 0);
+      const first = await request(url(1));
+      // 403/404 on a repo we were told about: the token can see the repo
+      // but not read its commits (it lacks Contents: read). Report it, and
+      // don't cache it, so fixing the token's permissions takes effect.
+      if (first.status === 403 || first.status === 404) {
+        denied.push(repo.full);
+        state.get(repo.full).list = [];
+        found.delete(repo.full);
+        listed++;
+        listProgress();
+        return;
+      }
+      const pages = [Array.isArray(first.data) ? first.data : []]; // 409 (an empty repository) gives none
+      const last = Math.min(MAX_COMMIT_PAGES, Number(first.link?.match(/[?&]page=(\d+)[^>]*>;\s*rel="last"/)?.[1] ?? 1));
+      found.set(repo.full, pages[0].length);
+      listProgress();
+      if (last > 1) {
+        const rest = Array.from({ length: last - 1 }, (_, i) => i + 2);
+        await pool(rest, CONCURRENCY, async (page) => {
+          const res = await request(url(page));
+          pages[page - 1] = Array.isArray(res.data) ? res.data : [];
+          found.set(repo.full, found.get(repo.full) + pages[page - 1].length);
+          listProgress();
+        });
+      }
       const commits = [];
       let squashed = 0;
-      for (let page = 1; page <= MAX_COMMIT_PAGES; page++) {
-        const res = await request(`/repos/${repo.full}/commits?author=${encodeURIComponent(user.login)}&per_page=100&page=${page}`);
-        // 403/404 on a repo we were told about: the token can see the repo
-        // but not read its commits (it lacks Contents: read). Report it, and
-        // don't cache it, so fixing the token's permissions takes effect.
-        if (page === 1 && (res.status === 403 || res.status === 404)) {
-          denied.push(repo.full);
-          state.get(repo.full).list = [];
-          listed++;
-          listProgress();
-          return;
-        }
-        // 409: an empty repository.
-        const items = Array.isArray(res.data) ? res.data : [];
-        for (const c of items) {
-          if ((c.parents?.length ?? 0) > 1) continue; // merge commit
-          commits.push([c.sha, c.commit?.author?.date ?? c.commit?.committer?.date]);
-          if (SQUASH_MESSAGE.test((c.commit?.message ?? "").split("\n")[0])) squashed++;
-        }
-        if (items.length < 100) break;
+      for (const c of pages.flat()) {
+        if (!c || (c.parents?.length ?? 0) > 1) continue; // merge commit
+        commits.push([c.sha, c.commit?.author?.date ?? c.commit?.committer?.date]);
+        if (SQUASH_MESSAGE.test((c.commit?.message ?? "").split("\n")[0])) squashed++;
       }
       state.get(repo.full).list = commits;
       state.get(repo.full).squashed = squashed;
       cache.set(cacheKey(`list:${repo.full.toLowerCase()}`), { commits, squashed });
+      found.delete(repo.full);
       listed++;
       listProgress();
     });

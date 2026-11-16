@@ -296,6 +296,22 @@ test("more merged PRs than one search returns are fetched in date ranges", async
   assert.deepEqual(got, expected({ withPrivate: true }).langs);
 });
 
+test("a repo's commit pages are all read, using the page count from page 1", async () => {
+  const gh = createFakeGitHub();
+  const progress = [];
+  const profile = await loadProfile("octo-dev", {
+    requestsPerSecond: Infinity,
+    fetchImpl: gh.fetchImpl,
+    cache: memoryCache(),
+    onProgress: (p) => p.phase === "list" && progress.push(p.message),
+  });
+  // webapp has over 400 commits: 5 pages of 100, each read exactly once.
+  assert.equal(gh.listCalls()["octo-dev/webapp"], Math.ceil(FIXTURE.repos["octo-dev/webapp"].commits.length / 100));
+  assert.equal(profile.totalCommits, expected({ withPrivate: false }).commits);
+  // The last repos still being listed are named, with what they've found so far.
+  assert.ok(progress.some((m) => /still listing \S+ \([\d,]+ commits so far\)/.test(m)), progress.at(-2));
+});
+
 test("unknown users get a clear error", async () => {
   const gh = createFakeGitHub();
   await assert.rejects(loadProfile("nobody-here", { requestsPerSecond: Infinity, fetchImpl: gh.fetchImpl }), /no GitHub user/);

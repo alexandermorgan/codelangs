@@ -130,6 +130,7 @@ export const FIXTURE = { repos };
 export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "full", slowDownAt = 0 } = {}) {
   let calls = 0;
   const detailCalls = {}; // repo -> REST commit-detail requests
+  const listCalls = {}; // repo -> commit-list pages requested
   let graphqlCalls = 0;
   const json = (body, status = 200, extra = {}) => ({
     status,
@@ -238,12 +239,21 @@ export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "ful
       if (url.searchParams.get("author")?.toLowerCase() !== "octo-dev") return json([]);
       const per = Number(url.searchParams.get("per_page") || 30);
       const list = [...repos[m[1]].commits].sort((a, b) => b.date.localeCompare(a.date));
+      // Like GitHub: a Link header with next and last pages, by repository ID.
+      const pages = Math.max(1, Math.ceil(list.length / per));
+      const at = (n) => `<https://api.github.com/repositories/4242/commits?author=${url.searchParams.get("author")}&per_page=${per}&page=${n}>`;
+      const link = [page < pages && `${at(page + 1)}; rel="next"`, page < pages && `${at(pages)}; rel="last"`, page > 1 && `${at(1)}; rel="first"`, page > 1 && `${at(page - 1)}; rel="prev"`]
+        .filter(Boolean)
+        .join(", ");
+      listCalls[m[1]] = (listCalls[m[1]] ?? 0) + 1;
       return json(
         list.slice((page - 1) * per, page * per).map((c) => ({
           sha: c.sha,
           parents: Array.from({ length: c.parents }, (_, i) => ({ sha: `p${i}` })),
           commit: { author: { date: c.date }, committer: { date: c.date }, message: repos[m[1]].prBased && c.parents === 1 ? `Change things (#${c.sha.slice(-4)})\n\nDetails.` : "Change things" },
         })),
+        200,
+        link ? { link } : {},
       );
     }
     if ((m = path.match(/^\/repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]+)$/))) {
@@ -263,5 +273,5 @@ export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "ful
     const r = handle(href, init.headers, init.body);
     return new Response(r.body || null, { status: r.status, headers: r.headers });
   };
-  return { handle, fetchImpl, calls: () => calls, detailCalls: () => ({ ...detailCalls }), graphqlCalls: () => graphqlCalls, prsOf };
+  return { handle, fetchImpl, calls: () => calls, detailCalls: () => ({ ...detailCalls }), listCalls: () => ({ ...listCalls }), graphqlCalls: () => graphqlCalls, prsOf };
 }
