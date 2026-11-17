@@ -271,6 +271,13 @@ function showNotes(profile) {
       return;
     }
   }
+  if (profile.unlisted?.length) {
+    const n = profile.unlisted.length;
+    notes.push(
+      `GitHub couldn't list the commits in ${n} ${n === 1 ? "repository" : "repositories"} ` +
+        `(${profile.unlisted.slice(0, 3).join(", ")}${n > 3 ? ", …" : ""}), so ${n === 1 ? "it isn't" : "they aren't"} counted. Try again later to include ${n === 1 ? "it" : "them"}.`,
+    );
+  }
   // Token problems that would otherwise leave private work out silently.
   if (profile.denied?.length) {
     const n = profile.denied.length;

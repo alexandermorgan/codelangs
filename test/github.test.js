@@ -332,6 +332,31 @@ test("a repo's commit pages are all read, using the page count from page 1", asy
   assert.ok(progress.some((m) => /still listing \S+ \([\d,]+ commits so far\)/.test(m)), progress.at(-2));
 });
 
+test("a repo whose commit list GitHub can't produce is read through commit search", async () => {
+  const gh = createFakeGitHub({ failingLists: ["octo-dev/webapp"] });
+  const profile = await loadProfile("octo-dev", { requestsPerSecond: Infinity, minBackoff: 1, fetchImpl: gh.fetchImpl, cache: memoryCache() });
+  // Tried three times, then searched instead; nothing is lost.
+  assert.equal(gh.listCalls()["octo-dev/webapp"], 3);
+  const want = expected({ withPrivate: false });
+  assert.deepEqual(profile.unlisted, []);
+  assert.deepEqual(profile.repos.map((r) => r.full).sort(), want.repos);
+  assert.equal(profile.totalCommits, want.commits);
+  assert.equal(profile.loadedCommits, want.commits);
+});
+
+test("when commit search fails too, that repo is left out and named, and the rest loads", async () => {
+  const cache = memoryCache();
+  const gh = createFakeGitHub({ failingLists: ["octo-dev/webapp"], failingSearch: true });
+  const profile = await loadProfile("octo-dev", { requestsPerSecond: Infinity, minBackoff: 1, fetchImpl: gh.fetchImpl, cache });
+  assert.deepEqual(profile.unlisted, ["octo-dev/webapp"]);
+  assert.equal(profile.repos.find((r) => r.full === "octo-dev/webapp"), undefined);
+  assert.ok(profile.loadedCommits > 0);
+  // Not cached as empty: once GitHub recovers, the repo is listed.
+  const again = await loadProfile("octo-dev", { requestsPerSecond: Infinity, fetchImpl: createFakeGitHub().fetchImpl, cache });
+  assert.deepEqual(again.unlisted, []);
+  assert.ok(again.repos.find((r) => r.full === "octo-dev/webapp"));
+});
+
 test("unknown users get a clear error", async () => {
   const gh = createFakeGitHub();
   await assert.rejects(loadProfile("nobody-here", { requestsPerSecond: Infinity, fetchImpl: gh.fetchImpl }), /no GitHub user/);

@@ -36,6 +36,15 @@ export class RateLimitError extends Error {
   }
 }
 
+/** GitHub kept answering 5xx (it gives up on some queries over very large repos). */
+export class ServerError extends Error {
+  constructor(status, path) {
+    super(`GitHub answered ${status} for ${path}`);
+    this.name = "ServerError";
+    this.status = status;
+  }
+}
+
 export class UserError extends Error {
   constructor(message) {
     super(message);
@@ -166,6 +175,14 @@ export function createClient({ token, fetchImpl = fetch.bind(globalThis), signal
     if (res.status === 202 || res.status === 204) return { status: res.status, data: null };
     if (!res.ok) {
       if ([404, 409, 410, 422, 451].includes(res.status)) return { status: res.status, data: null };
+      if (res.status >= 500) {
+        // Usually a hiccup, so try twice more; some queries fail every time.
+        if (attempt < 2) {
+          await sleep(Math.min(minBackoff, 1000) * 2 ** attempt, signal);
+          return request(path, attempt + 1);
+        }
+        throw new ServerError(res.status, path);
+      }
       throw new Error(`GitHub answered ${res.status} for ${path}`);
     }
     return { status: res.status, data: await res.json(), link: res.headers.get("link") || "" };
@@ -572,6 +589,7 @@ export async function loadProfile(
   let rateLimited = null;
   let timer = null;
   const denied = [];
+  const unlisted = []; // repos GitHub couldn't list the user's commits in
   const prRouteFailures = [];
   let fromPullRequests = 0;
 
@@ -616,30 +634,65 @@ export async function loadProfile(
     await pool(toList, token ? CONCURRENCY : 4, async (repo) => {
       const url = (page) => `/repos/${repo.full}/commits?author=${encodeURIComponent(user.login)}&per_page=100&page=${page}`;
       found.set(repo.full, 0);
-      const first = await request(url(1));
-      // 403/404 on a repo we were told about: the token can see the repo
-      // but not read its commits (it lacks Contents: read). Report it, and
-      // don't cache it, so fixing the token's permissions takes effect.
-      if (first.status === 403 || first.status === 404) {
-        denied.push(repo.full);
-        state.get(repo.full).list = [];
-        found.delete(repo.full);
-        listed++;
-        listProgress();
-        return;
-      }
-      const pages = [Array.isArray(first.data) ? first.data : []]; // 409 (an empty repository) gives none
-      const last = Math.min(MAX_COMMIT_PAGES, Number(first.link?.match(/[?&]page=(\d+)[^>]*>;\s*rel="last"/)?.[1] ?? 1));
-      found.set(repo.full, pages[0].length);
-      listProgress();
-      if (last > 1) {
-        const rest = Array.from({ length: last - 1 }, (_, i) => i + 2);
-        await pool(rest, CONCURRENCY, async (page) => {
-          const res = await request(url(page));
-          pages[page - 1] = Array.isArray(res.data) ? res.data : [];
-          found.set(repo.full, found.get(repo.full) + pages[page - 1].length);
+      let pages;
+      try {
+        const first = await request(url(1));
+        // 403/404 on a repo we were told about: the token can see the repo
+        // but not read its commits (it lacks Contents: read). Report it, and
+        // don't cache it, so fixing the token's permissions takes effect.
+        if (first.status === 403 || first.status === 404) {
+          denied.push(repo.full);
+          state.get(repo.full).list = [];
+          found.delete(repo.full);
+          listed++;
           listProgress();
-        });
+          return;
+        }
+        pages = [Array.isArray(first.data) ? first.data : []]; // 409 (an empty repository) gives none
+        const last = Math.min(MAX_COMMIT_PAGES, Number(first.link?.match(/[?&]page=(\d+)[^>]*>;\s*rel="last"/)?.[1] ?? 1));
+        found.set(repo.full, pages[0].length);
+        listProgress();
+        if (last > 1) {
+          const rest = Array.from({ length: last - 1 }, (_, i) => i + 2);
+          await pool(rest, CONCURRENCY, async (page) => {
+            const res = await request(url(page));
+            pages[page - 1] = Array.isArray(res.data) ? res.data : [];
+            found.set(repo.full, found.get(repo.full) + pages[page - 1].length);
+            listProgress();
+          });
+        }
+      } catch (err) {
+        if (!(err instanceof ServerError)) throw err;
+        // In very large repos (Homebrew/homebrew-cask, say) GitHub fails to
+        // filter the history by author and answers 500 every time. Commit
+        // search, which also covers only the default branch, can find them
+        // instead (its first 1,000). If that fails too, leave the repo out
+        // and say so, uncached, so a later try can pick it up.
+        pages = null;
+        try {
+          const q = encodeURIComponent(`repo:${repo.full} author:${user.login} merge:false`);
+          const hits = [];
+          for (let page = 1; page <= 10; page++) {
+            const res = await request(`/search/commits?q=${q}&sort=author-date&order=desc&per_page=100&page=${page}`);
+            const items = res.data?.items;
+            if (!items) break;
+            pages = [hits];
+            hits.push(...items);
+            found.set(repo.full, hits.length);
+            listProgress();
+            if (items.length < 100) break;
+          }
+        } catch (err2) {
+          if (!(err2 instanceof ServerError)) throw err2;
+        }
+        if (!pages) {
+          unlisted.push(repo.full);
+          state.get(repo.full).list = [];
+          found.delete(repo.full);
+          listed++;
+          listProgress();
+          return;
+        }
       }
       const commits = [];
       let squashed = 0;
@@ -803,6 +856,7 @@ export async function loadProfile(
     rateLimited,
     rate,
     denied: [...denied],
+    unlisted: [...unlisted],
     fromPullRequests,
     prRouteFailures: [...prRouteFailures],
     privateRepos,

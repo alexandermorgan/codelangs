@@ -126,8 +126,11 @@ export const FIXTURE = { repos };
  * `slowDownAt`: answer that request with GitHub's secondary-limit 403 (Retry-After: 1).
  * `tokenAccess`: "full" (default), "no-contents" (the token lists private repos
  * but can't read their commits), or "public-only" (it sees no private repos).
+ * `failingLists`: repos whose commit list always answers 500, as GitHub does for
+ * an author filter over a very large repo; `failingSearch`: commit search
+ * scoped to one of these repos answers 500 too.
  */
-export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "full", slowDownAt = 0 } = {}) {
+export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "full", slowDownAt = 0, failingLists = [], failingSearch = false } = {}) {
   let calls = 0;
   const detailCalls = {}; // repo -> REST commit-detail requests
   const listCalls = {}; // repo -> commit-list pages requested
@@ -224,6 +227,20 @@ export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "ful
       return json({ total_count: items.length, items }, 200, { "x-ratelimit-resource": "search" });
     }
     if (path === "/search/commits") {
+      // Scoped to one repo (the fallback for a commit list that fails): all of
+      // the user's non-merge commits there, newest first.
+      const scoped = url.searchParams.get("q").match(/repo:(\S+)/)?.[1];
+      if (scoped) {
+        if (failingSearch) return json({ message: "Server Error" }, 500);
+        const list = (repos[scoped]?.commits ?? []).filter((c) => c.parents === 1).sort((a, b) => b.date.localeCompare(a.date));
+        const items = list.slice((page - 1) * 100, page * 100).map((c) => ({
+          sha: c.sha,
+          parents: [{ sha: "p0" }],
+          repository: { full_name: scoped, fork: false },
+          commit: { author: { date: c.date }, committer: { date: c.date }, message: "Change things" },
+        }));
+        return json({ total_count: list.length, items }, 200, { "x-ratelimit-resource": "search" });
+      }
       const items = [];
       for (const [full, r] of Object.entries(repos)) {
         if (!r.searchable) continue;
@@ -236,6 +253,10 @@ export function createFakeGitHub({ rateLimitAfter = Infinity, tokenAccess = "ful
       return json({ message: "Resource not accessible by personal access token" }, 403);
     }
     if ((m = path.match(/^\/repos\/([^/]+\/[^/]+)\/commits$/))) {
+      if (failingLists.includes(m[1])) {
+        listCalls[m[1]] = (listCalls[m[1]] ?? 0) + 1;
+        return json({ message: "Server Error" }, 500);
+      }
       if (url.searchParams.get("author")?.toLowerCase() !== "octo-dev") return json([]);
       const per = Number(url.searchParams.get("per_page") || 30);
       const list = [...repos[m[1]].commits].sort((a, b) => b.date.localeCompare(a.date));
